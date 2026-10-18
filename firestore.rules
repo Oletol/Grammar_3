@@ -1,0 +1,244 @@
+rules_version = '2';
+
+// =====================================================================
+//  Правила безопасности Firestore для шаблона интерактивного курса.
+//
+//  Главные принципы:
+//   1. Роль «преподаватель» = существование документа teachers/{uid}.
+//      Создать его можно ТОЛЬКО через консоль Firebase (write: if false).
+//   2. Контент юнита (unitContent) студент читает, только если юнит
+//      открыт для ЕГО группы (groups/{gid}.openUnits).
+//   3. Ключи (answerKeys) студент не может прочитать НИКОГДА.
+//      Проверку выполняет браузер преподавателя и записывает итог в results.
+//   4. Свой результат (results) студент видит только после того, как
+//      преподаватель включил проверку (groups/{gid}.releasedUnits).
+//   5. Студент пишет только свой черновик и только пока юнит открыт,
+//      работа не сдана и проверка не включена.
+// =====================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- вспомогательные функции ----------
+    function signedIn() {
+      return request.auth != null;
+    }
+    function docPath(coll, id) {
+      return /databases/$(database)/documents/$(coll)/$(id);
+    }
+    function isTeacher() {
+      return signedIn() && exists(docPath('teachers', request.auth.uid));
+    }
+    function myProfile() {
+      return get(docPath('users', request.auth.uid)).data;
+    }
+    function myGroupId() {
+      return myProfile().groupId;
+    }
+    function groupData(gid) {
+      return get(docPath('groups', gid)).data;
+    }
+    function unitOpenForMe(unitId) {
+      return signedIn()
+        && exists(docPath('users', request.auth.uid))
+        && unitId in groupData(myGroupId()).openUnits;
+    }
+    function unitReleasedFor(gid, unitId) {
+      return unitId in groupData(gid).releasedUnits;
+    }
+    // упражнения юнита, которые преподаватель уже проверил по отдельности
+    function releasedEx(gid, unitId) {
+      return groupData(gid).get('releasedEx', {}).get(unitId, []);
+    }
+    // контрольные (тесты): настройки в groups/{gid}.tests[testKey] = {open, minutes, released, ...}
+    function testCfg(gid, key) {
+      return groupData(gid).get('tests', {}).get(key, {});
+    }
+    function testOpenForMe(key) {
+      return signedIn()
+        && exists(docPath('users', request.auth.uid))
+        && testCfg(myGroupId(), key).get('open', false) == true;
+    }
+    // id документов submissions/results: "<unitId>__<uid>"
+    function ownsId(docId) {
+      return signedIn() && docId.matches('^[A-Za-z0-9_-]+__' + request.auth.uid + '$');
+    }
+
+    // ---------- роли ----------
+    match /teachers/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;               // только через консоль Firebase
+    }
+
+    // ---------- профили студентов ----------
+    match /users/{uid} {
+      allow read: if isTeacher() || (signedIn() && request.auth.uid == uid);
+
+      // Регистрация: студент сам создаёт профиль, указав код группы.
+      // Поля role нет вообще — роль определяется коллекцией teachers.
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'email', 'groupId', 'createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 100
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.groupId is string
+        && exists(docPath('groups', request.resource.data.groupId))
+        && request.resource.data.createdAt == request.time;
+
+      // Студент может поменять только имя; группу меняет преподаватель.
+      allow update: if
+        (signedIn() && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 100)
+        || (isTeacher()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['groupId', 'name'])
+          && exists(docPath('groups', request.resource.data.groupId)));
+
+      allow delete: if isTeacher();
+    }
+
+    // ---------- группы и доступ к юнитам ----------
+    // { name, openUnits: [unitId], releasedUnits: [unitId], releasedEx: { unitId: [exId] } }
+    match /groups/{gid} {
+      allow read: if isTeacher() || (signedIn() && myGroupId() == gid);
+      allow write: if isTeacher();
+    }
+
+    // ---------- оглавление курса (видно всем вошедшим) ----------
+    match /units/{unitId} {
+      allow read: if signedIn();
+      allow write: if isTeacher();
+    }
+
+    // ---------- тексты и задания юнита (БЕЗ ключей) ----------
+    match /unitContent/{unitId} {
+      allow read: if isTeacher() || unitOpenForMe(unitId);
+      allow write: if isTeacher();
+    }
+
+    // ---------- ключи и заметки преподавателя ----------
+    match /answerKeys/{unitId} {
+      allow read, write: if isTeacher();
+    }
+
+    // ---------- ответы студентов (черновик / сдано) ----------
+    // id = "<unitId>__<uid>"
+    match /submissions/{subId} {
+      function validStudentDoc(d) {
+        return d.keys().hasOnly(['uid', 'groupId', 'unitId', 'answers', 'status', 'updatedAt', 'submittedAt', 'returnNote', 'returnedAt'])
+          && d.uid == request.auth.uid
+          && d.groupId == myGroupId()
+          && subId == d.unitId + '__' + d.uid
+          && d.answers is map
+          && d.status in ['draft', 'submitted']
+          && d.updatedAt == request.time
+          && (!('submittedAt' in d) || d.submittedAt == request.time);
+      }
+      function studentCanWrite(unitId) {
+        return unitOpenForMe(unitId) && !unitReleasedFor(myGroupId(), unitId);
+      }
+
+      allow read: if isTeacher() || ownsId(subId);
+
+      allow create: if signedIn()
+        && validStudentDoc(request.resource.data)
+        && !('returnNote' in request.resource.data) && !('returnedAt' in request.resource.data)
+        && studentCanWrite(request.resource.data.unitId)
+        && !request.resource.data.answers.keys().hasAny(releasedEx(myGroupId(), request.resource.data.unitId));
+
+      allow update: if
+        (signedIn()
+          && resource.data.uid == request.auth.uid
+          && resource.data.status == 'draft'           // сданную работу менять нельзя
+          && validStudentDoc(request.resource.data)
+          && request.resource.data.unitId == resource.data.unitId
+          // комментарий преподавателя студент изменить не может
+          && request.resource.data.get('returnNote', null) == resource.data.get('returnNote', null)
+          && request.resource.data.get('returnedAt', null) == resource.data.get('returnedAt', null)
+          && studentCanWrite(resource.data.unitId)
+          // ответы в уже проверенных упражнениях менять нельзя
+          && !request.resource.data.answers.diff(resource.data.get('answers', {})).affectedKeys()
+                .hasAny(releasedEx(myGroupId(), resource.data.unitId)))
+        || (isTeacher()                                 // «вернуть на доработку»
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'returnNote', 'returnedAt'])
+          && request.resource.data.status == 'draft');
+
+      allow delete: if isTeacher();
+    }
+
+    // ---------- результаты упражнений, проверенных преподавателем по отдельности ----------
+    // id = "<unitId>__<uid>"; там лежат только уже проверенные упражнения
+    match /exerciseResults/{rid} {
+      allow read: if isTeacher() || ownsId(rid);
+      allow write: if isTeacher();
+    }
+
+    // ---------- контрольные с ограничением времени ----------
+    // Задания контрольной (без ключей). Студент видит их, только если уже нажал «Start»
+    // (создал попытку) и контрольная открыта для его группы или по ней показаны результаты.
+    match /testContent/{key} {
+      allow read: if isTeacher()
+        || (signedIn()
+            && exists(docPath('users', request.auth.uid))
+            && (testCfg(myGroupId(), key).get('open', false) == true
+                || testCfg(myGroupId(), key).get('released', false) == true)
+            && exists(docPath('testAttempts', key + '__' + request.auth.uid)));
+      allow write: if isTeacher();
+    }
+
+    // Попытка студента: id = "<testKey>__<uid>".
+    // Время старта ставит сервер; писать ответы можно только до конца отведённого времени (+30 с).
+    match /testAttempts/{aid} {
+      allow read: if isTeacher() || ownsId(aid);
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'groupId', 'testKey', 'startedAt', 'updatedAt', 'answers', 'status'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.groupId == myGroupId()
+        && aid == request.resource.data.testKey + '__' + request.auth.uid
+        && testOpenForMe(request.resource.data.testKey)
+        && request.resource.data.startedAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.status == 'in_progress'
+        && request.resource.data.answers is map
+        && request.resource.data.answers.size() == 0;
+
+      allow update: if
+        (signedIn()
+          && resource.data.uid == request.auth.uid
+          && resource.data.status == 'in_progress'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers', 'status', 'updatedAt'])
+          && request.resource.data.answers is map
+          && request.resource.data.status in ['in_progress', 'submitted']
+          && request.resource.data.updatedAt == request.time
+          && testOpenForMe(resource.data.testKey)
+          && request.time <= resource.data.startedAt
+               + duration.value(int(testCfg(myGroupId(), resource.data.testKey).get('minutes', 0) * 60) + 30, 's'))
+        || (isTeacher() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']));
+
+      allow delete: if isTeacher();      // «разрешить новую попытку»
+    }
+
+    // Результаты контрольной: студент видит свой, только когда преподаватель их показал.
+    match /testResults/{rid} {
+      allow read: if isTeacher()
+        || (ownsId(rid)
+            && (resource == null
+                || testCfg(resource.data.groupId, resource.data.testKey).get('released', false) == true));
+      allow write: if isTeacher();
+    }
+
+    // ---------- результаты проверки ----------
+    // id = "<unitId>__<uid>"; пишет только преподаватель.
+    match /results/{rid} {
+      allow read: if isTeacher()
+        || (ownsId(rid)
+            && (resource == null
+                || unitReleasedFor(resource.data.groupId, resource.data.unitId)));
+      allow write: if isTeacher();
+    }
+  }
+}

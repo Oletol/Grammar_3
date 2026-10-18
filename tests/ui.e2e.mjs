@@ -1,0 +1,366 @@
+// Сквозной UI-сценарий на мок-Firebase: преподаватель + два студента.
+// Запуск: python3 -m http.server 5055 -d docs &  node tests/ui.e2e.mjs
+import { chromium } from "playwright";
+import { readFileSync, mkdirSync } from "node:fs";
+import assert from "node:assert/strict";
+
+const BASE = "http://127.0.0.1:5055";
+const SHOTS = process.env.SHOTS || "/tmp/shots";
+mkdirSync(SHOTS, { recursive: true });
+const mock = readFileSync(new URL("./mock-fb.js", import.meta.url), "utf8");
+const course = readFileSync(new URL("../content-private/test-fixture.json", import.meta.url), "utf8");
+
+const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch());
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+await ctx.route("**/js/fb.js*", (r) => r.fulfill({ contentType: "text/javascript", body: mock }));
+// LanguageTool: подставной ответ (в песочнице нет доступа к api.languagetool.org)
+let ltCalls = 0;
+await ctx.route("https://api.languagetool.org/**", async (r) => {
+  ltCalls++;
+  const text = new URLSearchParams(r.request().postData()).get("text") || "";
+  const i = text.indexOf("has went");
+  const matches = i < 0 ? [] : [{ offset: i, length: 8, message: "The past participle of 'go' is 'gone'.", shortMessage: "Wrong verb form",
+    replacements: [{ value: "has gone" }], rule: { issueType: "grammar", category: { name: "Grammar" } } }];
+  await r.fulfill({ contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ matches }) });
+});
+const errors = [];
+const page = async (url) => {
+  const p = await ctx.newPage();
+  p.on("pageerror", (e) => errors.push(url + ": " + e.message));
+  p.on("dialog", (d) => d.accept());
+  await p.goto(BASE + url);
+  return p;
+};
+const shot = (p, n) => p.screenshot({ path: `${SHOTS}/${n}.png`, fullPage: false });
+const step = (t) => console.log("•", t);
+
+// --- seed: аккаунт преподавателя (в реальном проекте — через консоль Firebase)
+const t = await page("/teacher.html");
+await t.evaluate(() => {
+  localStorage.setItem("mock:auth", JSON.stringify({ "teacher@uni.ru": { uid: "T1", password: "secret1" } }));
+  localStorage.setItem("mock:db", JSON.stringify({ "teachers/T1": { name: "Teacher" } }));
+});
+await t.reload();
+
+step("Преподаватель входит");
+await t.fill("#auth-form [name=email]", "teacher@uni.ru");
+await t.fill("#auth-form [name=password]", "secret1");
+await t.click("#auth-submit");
+await t.waitForSelector("#tool-nav .sb-item");
+
+step("Импорт курса");
+await t.click('a[href="#tools/content"]');
+await t.waitForSelector("#import-text");
+await t.evaluate((c) => { document.querySelector("#import-text").value = c; }, course);
+await t.click("[data-act=import]");
+await t.waitForSelector("td:has-text(\"Modern Technologies\")");
+const stored = await t.evaluate(() => JSON.parse(localStorage.getItem("mock:db")));
+assert.ok(!JSON.stringify(stored["unitContent/u1"]).includes('"answer"'), "в unitContent не должно быть ключей");
+assert.ok(!JSON.stringify(stored["unitContent/u1"]).includes("Demo teacher's note"), "заметки преподавателя не должны попадать в unitContent");
+assert.equal(stored["answerKeys/u1"].exercises.g1["1"], "sends");
+await t.click('.sb-uh[data-unit="u1"]');
+await t.click('.sb-item:has-text("Reading")');
+await t.waitForSelector(".keyhint");
+await t.waitForSelector(".tnote");
+await shot(t, "01-teacher-preview-keys");
+
+step("Создание группы");
+await t.click('a[href="#tools/groups"]');
+await t.waitForSelector("#g-name");
+await t.fill("#g-name", "Public Administration 21");
+await t.fill("#g-code", "pa-21");
+await t.click("[data-act=create-group]");
+await t.waitForSelector("code:text('PA-21')");
+
+step("Студент 1 регистрируется");
+const s1 = await page("/index.html");
+await s1.click("[data-mode=register]");
+await s1.fill("[name=name]", "Anna Ivanova");
+await s1.fill("[name=email]", "anna@uni.ru");
+await s1.fill("[name=password]", "pass123");
+await s1.fill("[name=group]", "pa-21");
+await s1.click("#auth-submit");
+await s1.waitForSelector("text=No units are open yet");
+assert.equal(await s1.locator(".sb-item").count(), 0);
+assert.equal(await s1.locator(".sb-uh").count(), 16);
+await shot(s1, "02-student-locked");
+
+step("Преподаватель открывает Unit 1, у студента появляется без перезагрузки");
+await t.click('a[href="#tools/access"]');
+await t.click("[data-act=toggle-open][data-unit=u1]");
+await s1.waitForSelector('.sb-uh[data-unit="u1"][data-can-open="1"]', { timeout: 5000 });
+await s1.click('.sb-uh[data-unit="u1"]');
+await s1.click('.sb-item:has-text("Reading")');
+await s1.waitForSelector("#ex-r2");
+
+step("Студент 1 отвечает; черновик сохраняется");
+const sel = (ex, it) => `[data-ex="${ex}"][data-item="${it}"]`;
+for (const [i, v] of [["1", "c"], ["2", "b"], ["3", "f"], ["4", "d"]]) await s1.selectOption(sel("r2", i), v);
+await s1.check(`${sel("r3", "1")}[value=B]`);
+await s1.check(`${sel("r3", "2")}[value=A]`);
+await s1.click('.sb-item:has-text("Grammar in Use")');
+await s1.fill(sel("g1", "1"), "sends");
+await s1.fill(sel("g1", "2"), "gives");
+await s1.fill(sel("g1", "5"), "dont understand");
+await s1.fill(sel("g1", "10"), "Are you avoiding");
+await s1.click('.sb-item:has-text("Writing")');
+await s1.fill(sel("w2", "1"), "Miscommunication often starts with the wrong channel. Last year our dean's office sent exam changes by email only...");
+await s1.locator("#save-state", { hasText: /Saved|saved/ }).waitFor({ timeout: 5000 });
+await s1.reload();
+await s1.click('.sb-item:has-text("Grammar in Use")');
+assert.equal(await s1.inputValue(sel("g1", "2")), "gives", "черновик восстановлен после перезагрузки");
+
+step("Флеш-карточки и упражнение 1.1.1 (буквы)");
+await s1.click('.sb-item:has-text("Warm-up")');
+await s1.waitForSelector(".fc-card");
+await s1.locator(".fc-card").first().click();
+assert.equal(await s1.locator(".fc-card.flip").count(), 1);
+await s1.waitForTimeout(500);
+await s1.locator(".fc").first().screenshot({ path: `${SHOTS}/14-flashcard-back.png` });
+await s1.locator('[data-fc="next"]').first().click();
+assert.equal((await s1.locator(".fc-count").first().textContent()).trim(), "2 / 15");
+const m1key = "b d e f a j n m h o i g l k c".split(" ");
+for (let i = 1; i <= 12; i++) await s1.fill(sel("m1", String(i)), i === 11 ? "x" : m1key[i - 1].toUpperCase());
+await s1.fill(sel("m2", "1"), "b");
+await s1.locator("#save-state", { hasText: /Saved|saved/ }).waitFor({ timeout: 5000 });
+await shot(s1, "11-student-warmup");
+
+step("Копирование и вставка запрещены");
+const pasteBlocked = await s1.evaluate((q) => { const el = document.querySelector(q); const e = new Event("paste", { bubbles: true, cancelable: true }); el.dispatchEvent(e); return e.defaultPrevented; }, sel("m1", "13"));
+assert.equal(pasteBlocked, true, "вставка заблокирована");
+const copyBlocked = await s1.evaluate(() => { const e = new Event("copy", { bubbles: true, cancelable: true }); document.querySelector("#content .ex-i").dispatchEvent(e); return e.defaultPrevented; });
+assert.equal(copyBlocked, true, "копирование заблокировано");
+assert.equal(await s1.evaluate(() => getComputedStyle(document.querySelector("#content .ex-i")).userSelect), "none");
+
+step("Преподаватель проверяет одно упражнение, студент видит результат сразу");
+await t.click('.sb-uh[data-unit="u1"]').catch(() => {});
+await t.click('.sb-item:has-text("Warm-up")');
+await t.waitForSelector('[data-act="check-ex"][data-ex="m1"]');
+await t.locator('.ex-bar').first().screenshot({ path: `${SHOTS}/15-teacher-exbar.png` });
+await t.click('[data-act="check-ex"][data-ex="m1"]');
+await s1.waitForSelector("#ex-m1 .ex-score", { timeout: 5000 });
+assert.equal((await s1.textContent("#ex-m1 .ex-score")).trim(), "11 / 15");
+assert.equal(await s1.locator(`${sel("m1", "11")}.bad`).count(), 1);
+assert.equal(await s1.locator(sel("m1", "1")).isDisabled(), true, "проверенное упражнение закрыто для правки");
+assert.equal(await s1.locator(sel("m2", "2")).isDisabled(), false, "другие упражнения открыты");
+assert.equal(await s1.locator("#ex-m2 .ex-score").count(), 0, "упражнение без ключа не проверяется");
+await shot(s1, "13-student-exercise-checked");
+
+step("1.1.3 и 1.1.4 проверяются преподавателем по отдельности");
+await s1.click('.sb-item:has-text("Warm-up")');
+await s1.fill(sel("m3", "1"), "reply to your message");
+await s1.fill(sel("m3", "8"), "Block him");
+await s1.fill(sel("m4", "1"), "with");
+await s1.fill(sel("m4", "2"), "of");
+await s1.locator("#save-state", { hasText: /Saved|saved/ }).waitFor({ timeout: 5000 });
+assert.equal(await s1.locator("#ex-m3 .ex-tag").textContent(), "Checked by your teacher");
+await t.click('[data-act="check-ex"][data-ex="m4"]');
+await s1.waitForSelector("#ex-m4 .ex-score", { timeout: 5000 });
+assert.equal((await s1.textContent("#ex-m4 .ex-score")).trim(), "1 / 15");
+assert.equal(await s1.locator("#ex-m3 .ex-score").count(), 0, "1.1.3 ещё не проверено");
+await t.click('[data-act="check-ex"][data-ex="m3"]');
+await s1.waitForSelector("#ex-m3 .ex-score", { timeout: 5000 });
+assert.equal((await s1.textContent("#ex-m3 .ex-score")).trim(), "2 / 15", "варианты ответа принимаются");
+const arrows = await s1.evaluate(() => /[\u2190\u2192\u2934\u00ab\u00bb\u25bc\u203a\u25b6]/.test(document.body.innerText));
+assert.equal(arrows, false, "в интерфейсе нет стрелок");
+await s1.locator("#ex-m4").screenshot({ path: `${SHOTS}/16-prepositions-checked.png` });
+
+step("Контрольная с таймером: скрыта, пока преподаватель её не откроет");
+assert.equal(await s1.locator("#test-nav-wrap").isHidden(), true, "контрольной не видно");
+let dbNow = await s1.evaluate(() => JSON.parse(localStorage.getItem("mock:db")));
+assert.ok(dbNow["testContent/u1--t1"], "задания контрольной загружены отдельно");
+assert.ok(!JSON.stringify(dbNow["testContent/u1--t1"]).includes('"answer"'), "в заданиях контрольной нет ключей");
+assert.ok(!JSON.stringify(dbNow["unitContent/u1"]).includes("Vocabulary check"), "контрольной нет в учебнике");
+await t.click('a[href="#tools/tests"]');
+await t.waitForSelector('[data-act="test-open"]');
+await t.click('[data-act="test-open"]');
+await s1.waitForSelector('#test-nav a', { timeout: 5000 });
+await s1.click('#test-nav a');
+await s1.waitForSelector("#start-test");
+assert.equal(await s1.locator("#ex-q1").count(), 0, "до старта вопросов не видно");
+await s1.click("#start-test");
+await s1.waitForSelector("#ex-q1", { timeout: 5000 });
+await s1.waitForSelector("#test-timer");
+const timerText = (await s1.textContent("#test-timer")).trim();
+assert.ok(/^(9|10):\d\d$/.test(timerText), "таймер идёт: " + timerText);
+await s1.check(`${sel("q1", "1")}[value=A]`);
+await s1.check(`${sel("q1", "2")}[value=A]`);
+await s1.fill(sel("q2", "1"), "with");
+await s1.locator("#save-state", { hasText: /Saved|saved/ }).waitFor({ timeout: 5000 });
+await shot(s1, "17-student-test");
+await t.click('[data-act="test-select"]');
+await t.waitForSelector("text=in progress");
+await shot(t, "18-teacher-test-monitor");
+// время вышло: переносим старт попытки на 11 минут назад
+await s1.evaluate(() => { const d = JSON.parse(localStorage.getItem("mock:db")); for (const k in d) if (k.startsWith("testAttempts/")) d[k].startedAt = { __ts: Date.now() - 11 * 60000 }; localStorage.setItem("mock:db", JSON.stringify(d)); });
+await s1.reload();
+await s1.waitForSelector("#ex-q1", { timeout: 5000 });
+assert.equal(await s1.locator(sel("q2", "2")).isDisabled(), true, "после окончания времени поля закрыты");
+await t.click('[data-act="test-release"]');
+await s1.waitForSelector(".ub-res:has-text('Your result')", { timeout: 5000 });
+assert.ok((await s1.textContent(".ub-res")).includes("2 / 4"));
+await shot(s1, "19-student-test-result");
+await s1.click('.sb-uh[data-unit="u1"]');
+await s1.click('.sb-item:has-text("Warm-up")');
+await s1.waitForSelector("#submit-unit");
+
+step("1.1.5: развёрнутые ответы, проверка грамматики и лексики, исправление");
+await s1.click('.sb-item:has-text("Warm-up")');
+await s1.waitForSelector("#ex-m5");
+assert.equal(await s1.locator("#ex-m5 .ex-c").count(), 0, "нет счётчика пунктов в заголовке");
+const t1 = "The person I send messages to most often is my sister, who has went to study in Kazan, so we keep in touch every evening.";
+await s1.fill(sel("m5", "1"), t1);
+assert.equal((await s1.textContent('[data-wc="m5:1"]')).trim(), String(t1.split(/\s+/).length));
+await s1.fill(sel("m5", "2"), "I usually reply to messages at once, but when I am at a lecture I mute the group chat and go offline for an hour.");
+await s1.waitForTimeout(2500);
+await t.evaluate(() => { location.hash = "#u1/warmup"; });
+await t.waitForSelector('[data-act="check-writing"][data-ex="m5"]');
+await t.click('[data-act="check-writing"][data-ex="m5"]');
+await s1.waitForSelector("#ex-m5 .wfb", { timeout: 15000 });
+assert.ok(ltCalls >= 1, "LanguageTool вызывался");
+assert.equal(await s1.locator("#ex-m5 mark.lt").first().textContent(), "has went");
+const fbText = await s1.textContent("#ex-m5 .wfb");
+assert.ok(fbText.includes("has gone"), "предложено исправление");
+assert.ok(/Unit phrases used \(\d+ of \d+\): .*keep in touch/.test(fbText), "учтены фразы юнита");
+assert.equal(await s1.locator(sel("m5", "1")).isDisabled(), false, "текст можно исправить");
+await s1.locator("#ex-m5 li").first().screenshot({ path: `${SHOTS}/20-writing-feedback.png` });
+await s1.fill(sel("m5", "1"), t1.replace("has went", "has gone"));
+await s1.locator("#save-state", { hasText: /Saved|saved/ }).waitFor({ timeout: 5000 });
+
+step("1.1.6 с проверкой по кнопке, 1.1.7 карточки для обсуждения");
+await s1.fill(sel("m6", "1"), "catch");
+await s1.fill(sel("m6", "12"), "sorry");
+await s1.fill(sel("m6", "2"), "say");
+await s1.waitForTimeout(2500);
+assert.equal(await s1.locator("#ex-m6 .ex-score").count(), 0, "до проверки результата нет");
+await t.click('[data-act="check-ex"][data-ex="m6"]');
+await s1.waitForSelector("#ex-m6 .ex-score", { timeout: 5000 });
+assert.equal((await s1.textContent("#ex-m6 .ex-score")).trim(), "2 / 15");
+const deck = s1.locator(".fc-disc");
+assert.equal((await deck.locator(".ex-n").textContent()).trim(), "1.1.7");
+assert.equal((await deck.locator(".lbl").textContent()).trim(), "Card 1");
+await deck.locator('[data-fc="next"]').click();
+assert.equal((await deck.locator(".lbl").textContent()).trim(), "Card 2");
+assert.ok((await deck.locator(".q").textContent()).includes("officials"));
+await deck.screenshot({ path: `${SHOTS}/21-discussion-cards.png` });
+const afterDeck = await s1.evaluate(() => { const el = document.querySelector(".fc-disc"); let n = el.nextElementSibling; while (n && !n.matches(".discuss,section,.ex")) n = n.nextElementSibling; return n ? n.className : "none"; });
+assert.equal(afterDeck, "none", "после карточек нет блока Talk about it");
+
+step("Преподаватель видит черновик в реальном времени");
+await t.selectOption("#ctx-unit", "u1");
+await t.click('a[href="#tools/works"]');
+await t.waitForSelector("text=Anna Ivanova");
+await t.waitForSelector(".pill.warn:text('draft')");
+
+step("Студент 1 сдаёт работу");
+await s1.click("#submit-unit");
+await s1.waitForSelector(".ub-sub");
+await s1.click('.sb-item:has-text("Grammar in Use")');
+assert.equal(await s1.locator(sel("g1", "1")).isDisabled(), true);
+
+step("Студент 2 регистрируется, отвечает и сдаёт");
+const s2 = await page("/index.html");
+await s2.evaluate(() => sessionStorage.clear());
+await s2.reload();
+await s2.click("[data-mode=register]");
+await s2.fill("[name=name]", "Boris Petrov");
+await s2.fill("[name=email]", "boris@uni.ru");
+await s2.fill("[name=password]", "pass123");
+await s2.fill("[name=group]", "PA-21");
+await s2.click("#auth-submit");
+await s2.click('.sb-uh[data-unit="u1"]');
+await s2.click('.sb-item:has-text("Grammar in Use")');
+await s2.fill(sel("g1", "1"), "sends");
+await s2.fill(sel("g1", "2"), "is give");
+await s2.click("#submit-unit");
+await s2.waitForSelector(".ub-sub");
+
+step("Преподаватель оценивает открытый ответ");
+await t.waitForSelector("text=Boris Petrov");
+await t.click("tr:has-text('Anna Ivanova') [data-act=select-student]");
+await t.waitForSelector("#detail .g-score");
+await t.fill('#detail .g-score[data-ex="w2"]', "8");
+await t.fill('#detail .g-comment[data-ex="w2"]', "Good topic sentence; add one more example.");
+await t.click("#detail [data-act=save-grades] >> nth=0");
+await t.waitForSelector("text=Marks saved");
+await shot(t, "03-teacher-works");
+
+step("Результаты не видны студенту до включения проверки");
+assert.equal(await s1.locator(".ub-res").count(), 0);
+
+step("Преподаватель включает проверку, студент видит результат сразу");
+await t.click('a[href="#tools/access"]');
+await t.click("[data-act=release][data-unit=u1]");
+await s1.waitForSelector(".ub-res", { timeout: 5000 });
+const bar = await s1.textContent(".ub-res");
+console.log("   студент 1:", bar.replace(/\s+/g, " ").trim());
+await s1.click('.sb-item:has-text("Grammar in Use")');
+await s1.waitForSelector(".gap.bad");
+assert.equal(await s1.locator(`${sel("g1", "1")}.ok`).count(), 1);
+assert.equal(await s1.locator(`${sel("g1", "5")}.ok`).count(), 0, "«dont understand» — неверно");
+assert.equal(await s1.locator(`${sel("g1", "10")}.ok`).count(), 1, "регистр не важен");
+await shot(s1, "04-student-results-grammar");
+await s1.click('.sb-item:has-text("Writing")');
+await s1.waitForSelector(".feedback:text('Good topic sentence')");
+await shot(s1, "05-student-feedback");
+await s2.waitForSelector(".ub-res");
+
+step("Аналитика");
+await t.selectOption("#ctx-unit", "u1");
+await t.click('a[href="#tools/stats"]');
+await t.waitForSelector("text=most difficult");
+await shot(t, "06-teacher-stats");
+const statsText = await t.textContent("#view");
+assert.ok(statsText.includes("“is give” ×1"), "частые ошибки показаны");
+
+step("Боковая панель сворачивается");
+await t.click(".topbar .burger");
+await t.waitForTimeout(400);
+assert.equal(await t.evaluate(() => document.body.classList.contains("sb-collapsed")), true);
+assert.equal(await t.evaluate(() => getComputedStyle(document.querySelector(".main")).marginLeft), "0px");
+await shot(t, "08-teacher-collapsed");
+await t.click(".topbar .burger");
+await t.waitForTimeout(300);
+await t.click('.sb-uh[data-unit="u1"]');
+await t.click('.sb-item:has-text("Grammar in Use")');
+await t.waitForSelector(".keyhint");
+await shot(t, "09-teacher-unit-keys");
+
+step("Мобильная ширина");
+await s1.setViewportSize({ width: 390, height: 800 });
+await s1.waitForTimeout(500);
+await shot(s1, "07-student-mobile");
+await s1.click(".topbar .burger");
+await s1.waitForTimeout(400);
+await shot(s1, "10-student-mobile-menu");
+const overflow = await s1.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+assert.equal(overflow, false, "нет горизонтальной прокрутки");
+
+step("Преподаватель удаляет студента из курса");
+await s1.setViewportSize({ width: 1280, height: 900 });
+await t.click('a[href="#tools/groups"]');
+await t.waitForSelector("#g-name");
+await t.waitForSelector('tr:has-text("Boris Petrov") [data-act=remove-student]');
+const dbBefore = await t.evaluate(() => JSON.parse(localStorage.getItem("mock:db")));
+const borisUid = Object.entries(dbBefore).find(([p, d]) => p.startsWith("users/") && d.name === "Boris Petrov")[0].split("/")[1];
+const annaUid = Object.entries(dbBefore).find(([p, d]) => p.startsWith("users/") && d.name === "Anna Ivanova")[0].split("/")[1];
+const owned = (db, uid) => Object.entries(db).filter(([p, d]) => !p.startsWith("users/") && d && d.uid === uid).length;
+assert.ok(owned(dbBefore, borisUid) > 0, "у Бориса есть работы до удаления");
+await shot(t, "11-teacher-remove-button");
+await t.click('tr:has-text("Boris Petrov") [data-act=remove-student]');
+await t.waitForSelector('tr:has-text("Boris Petrov")', { state: "detached", timeout: 5000 });
+await t.waitForSelector('tr:has-text("Anna Ivanova")');
+const dbAfter = await t.evaluate(() => JSON.parse(localStorage.getItem("mock:db")));
+assert.equal(dbAfter["users/" + borisUid], undefined, "профиль удалён");
+assert.equal(owned(dbAfter, borisUid), 0, "ответы, оценки и результаты удалены");
+assert.equal(owned(dbAfter, annaUid), owned(dbBefore, annaUid), "работы другого студента не тронуты");
+await s2.reload();
+await s2.waitForSelector("text=We could not find your student profile");
+await shot(s2, "12-removed-student");
+await t.click('a[href="#tools/works"]');
+await t.waitForSelector('text=Anna Ivanova');
+assert.ok(!(await t.textContent("#view")).includes("Boris Petrov"), "удалённого студента нет в Student work");
+
+assert.deepEqual(errors, [], "JS-ошибки на страницах");
+console.log("\nВСЕ ШАГИ ПРОЙДЕНЫ");
+await browser.close();
