@@ -566,3 +566,6 @@ details.zh-note .zh-b i{font-style:italic;color:var(--navy)}
 .an-list .src .use select.gap,.an-list .tpl .use+select.gap{font-size:13px}
 .an-list .src .use select.gap{border-color:#e3d3a8;background:var(--gold3);max-width:11em}
 .art-text select.gap{min-width:3.6em}
+
+/* Teacher's Edition: dropdowns open for viewing the choices, the key preselected */
+select.gap.key-sel{border-color:var(--ok);background:var(--ok2);color:var(--ok);cursor:pointer}

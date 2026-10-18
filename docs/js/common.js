@@ -209,16 +209,21 @@ export function renderExercise(ex, o = {}) {
     if (ex.kind === "gap") {
       const size = it.size || ex.size || 14;
       // "choices": the word is chosen from a dropdown list instead of being typed
+      // Teacher's Edition (key shown): the dropdown stays open for viewing the choices, the key is preselected; nothing is saved
+      const keyMode = !!(o.key && o.key[it.id] !== undefined && it.choices && !o.answers);
+      const kv = keyMode ? firstKey(o.key[it.id]) : val;
       const input = it.choices
-        ? `<select class="gap ${mark}" ${attrs}><option value="">${esc(ex.ph || "choose…")}</option>${it.choices.map((c) => `<option value="${esc(c)}" ${val === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
+        ? `<select class="gap ${mark} ${keyMode ? "key-sel" : ""}" ${keyMode ? `data-ex="${esc(ex.id)}" data-item="${esc(it.id)}" title="The choices the student sees; the key is selected"` : attrs}><option value="">${esc(ex.ph || "choose…")}</option>${it.choices.map((c) => `<option value="${esc(c)}" ${kv === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
         : `<input class="gap ${ex.box ? "box" : ""} ${mark}" ${attrs} value="${esc(val)}" size="${size}" ${ex.box ? `style="width:${size + 1}ch"` : ""} ${NOAUTO}>`;
       if (ex.inline) { inlineCtl[it.id] = `${ex.inlineNums === false ? "" : `<span class="gn">${esc(it.id)}</span>`}${input}${corr}${keyHint}`; return ""; }
       body = (it.text || "").includes("___") ? it.text.replace("___", input) : `<span class="li-t">${it.text || ""}</span>${input}`;
       body += corr + keyHint;
     } else if (ex.kind === "match") {
+      const mv = o.key && o.key[it.id] !== undefined && !o.answers ? firstKey(o.key[it.id]) : val;
       const opts = (ex.options || []).map((op) =>
-        `<option value="${esc(op.id)}" ${val === op.id ? "selected" : ""}>${ex.plain ? "" : esc(op.id) + ". "}${esc(stripTags(op.text))}</option>`).join("");
-      body = `<span class="m-word">${it.text}</span> <select class="gap ${mark}" ${attrs}><option value="">choose…</option>${opts}</select>${corr}${keyHint}`;
+        `<option value="${esc(op.id)}" ${mv === op.id ? "selected" : ""}>${ex.plain ? "" : esc(op.id) + ". "}${esc(stripTags(op.text))}</option>`).join("");
+      const keyM = !!(o.key && o.key[it.id] !== undefined && !o.answers);
+      body = `<span class="m-word">${it.text}</span> <select class="gap ${mark} ${keyM ? "key-sel" : ""}" ${keyM ? `data-ex="${esc(ex.id)}" data-item="${esc(it.id)}"` : attrs}><option value="">choose…</option>${opts}</select>${corr}${keyHint}`;
     } else if (ex.kind === "mcq") {
       const name = `${ex.id}__${it.id}`;
       const letters = "ABCDEFGH";

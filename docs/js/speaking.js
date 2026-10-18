@@ -1,7 +1,7 @@
 // Speaking: timers with an in-browser voice recorder (from the msupm2 course engine).
 // The recording never leaves the browser: it is kept in memory as a blob, played back here and,
 // if the student wants, saved to their own computer with "Download". Reloading the page clears it.
-import { registerSpeaking, esc } from "./common.js?v=20261015g3";
+import { registerSpeaking, esc } from "./common.js?v=20261018b";
 
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const SPK = new Map();   // key -> state (survives re-rendering of the page)
