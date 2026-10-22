@@ -133,29 +133,71 @@ export function gradeExercise(ex, answers, keys) {
 }
 
 // Итоговый документ results/{unitId__uid}
-export function buildResult({ sub, content, keys, manual = {}, showCorrect = true }) {
+// factors = {exId: 0.25}: the student was absent from the lesson where this in-class exercise was done,
+// so the exercise brings only 25% of its points.
+export const r2 = (x) => Math.round(x * 100) / 100;
+export function buildResult({ sub, content, keys, manual = {}, showCorrect = true, factors = {} }) {
   const auto = gradeAuto(content, sub.answers, keys);
   if (!showCorrect)
     for (const ex of Object.values(auto.items)) for (const r of Object.values(ex)) delete r.correct;
+  let aScore = 0;
+  for (const [exId, items] of Object.entries(auto.items))
+    aScore += Object.values(items).filter((r) => r.ok).length * (factors[exId] ?? 1);
   let mScore = 0, mMax = 0, pending = 0;
   for (const ex of exercisesOf(content)) {
     if (!isManual(ex)) continue;
     for (const it of ex.items || []) {
       mMax += itemMax(ex, it);
       const g = manual?.[ex.id]?.[it.id];
-      if (g && g.score !== null && g.score !== "" && g.score !== undefined) mScore += Number(g.score);
+      if (g && g.score !== null && g.score !== "" && g.score !== undefined) mScore += Number(g.score) * (factors[ex.id] ?? 1);
       else pending += 1;
     }
   }
+  aScore = r2(aScore); mScore = r2(mScore);
   return {
     uid: sub.uid, groupId: sub.groupId, unitId: sub.unitId,
     auto: auto.items, manual,
-    autoScore: auto.score, autoMax: auto.max,
+    autoScore: aScore, autoMax: auto.max,
     manualScore: mScore, manualMax: mMax, manualPending: pending,
-    score: auto.score + mScore, max: auto.max + mMax,
+    score: r2(aScore + mScore), max: auto.max + mMax,
+    factors: Object.fromEntries(Object.entries(factors).filter(([, f]) => f !== 1)),
     showCorrect,
   };
 }
+
+// ------------------------------------------------------------------ exercises marked "Done" by the student
+// Stored inside the answers map under a key that is never an exercise id: answers._done = {exId: "1"}.
+// (This needs no change to the database rules: answers is already a free map.)
+export const DONE = "_done";
+export const doneMap = (answers) => (answers && typeof answers[DONE] === "object" && answers[DONE]) || {};
+
+// translation exercises are left out of the live statistics
+export const isTranslation = (ex) => ex.stats === false || /translat/i.test(`${ex.title || ""} ${ex.rubric || ""}`.replace(/<[^>]*>/g, ""));
+
+// numbers of the exercises as the book shows them: {exId: "1.4.2"}
+export function exerciseNumbers(content, unitN) {
+  const out = {};
+  (content?.sections || []).forEach((s, i) => {
+    let n = 0;
+    for (const b of s.blocks || []) {
+      if (b.type === "exercise") { n += 1; out[b.id] = `${unitN}.${i + 1}.${n}`; }
+      else if (b.type === "flashcards" && b.numbered) n += 1;
+    }
+  });
+  return out;
+}
+
+// In-Class / HA labels and the teacher's "done" ticks: groups/{gid}.plan[unitId][exId] = {as, done, date}
+export const PLAN_LABEL = { class: "In-Class", home: "HA" };
+export function planTag(p) {
+  if (!p?.as) return "";
+  return `<span class="ex-plan ${p.as === "home" ? "home" : "class"}${p.done ? " done" : ""}" title="${p.as === "home" ? "Home assignment" : "Done in class"}${p.done && p.date ? " · " + esc(fmtDate(p.date)) : ""}">${p.done ? "✓ " : ""}${PLAN_LABEL[p.as] || ""}</span>`;
+}
+export const fmtDate = (iso) => { const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? `${m[3]}.${m[2]}.${m[1]}` : String(iso || ""); };
+export const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+
+// the answer as a person reads it: for matching, the letter with the text of the option
+export function answerLabel(ex, v) { return showAns(ex, v); }
 
 // ---------------------------------------------------------------------
 //  Отрисовка
@@ -190,8 +232,14 @@ export function renderExercise(ex, o = {}) {
   let scoreLine = "";
   if (o.auto && isAuto(ex)) {
     const vals = Object.values(o.auto);
-    scoreLine = `<span class="ex-score">${vals.filter((v) => v.ok).length} / ${vals.length}</span>`;
+    const ok = vals.filter((v) => v.ok).length;
+    scoreLine = o.factor && o.factor !== 1
+      ? `<span class="ex-score low" title="You were absent from the lesson where this exercise was done in class: it brings ${Math.round(o.factor * 100)}% of the points.">${ok} / ${vals.length} · ${Math.round(o.factor * 100)}% = ${r2(ok * o.factor)}</span>`
+      : `<span class="ex-score">${ok} / ${vals.length}</span>`;
+  } else if (o.factor && o.factor !== 1) {
+    scoreLine = `<span class="ex-score low" title="You were absent from the lesson where this exercise was done in class.">${Math.round(o.factor * 100)}% of the points</span>`;
   }
+  const stat = (id) => (o.itemStat ? o.itemStat(id) : "");
   const options = ex.kind === "match" && ex.showOptionList !== false
     ? `<div class="opt-list">${(ex.options || []).map((op) => `<b>${esc(op.id)}</b>&nbsp;${op.text}`).join(" &nbsp;&middot;&nbsp; ")}</div>` : "";
 
@@ -210,20 +258,20 @@ export function renderExercise(ex, o = {}) {
       const size = it.size || ex.size || 14;
       // "choices": the word is chosen from a dropdown list instead of being typed
       // Teacher's Edition (key shown): the dropdown stays open for viewing the choices, the key is preselected; nothing is saved
-      const keyMode = !!(o.key && o.key[it.id] !== undefined && it.choices && !o.answers);
+      const keyMode = !!(o.key && o.key[it.id] !== undefined && it.choices && (!o.answers || (o.practice && val === "")));
       const kv = keyMode ? firstKey(o.key[it.id]) : val;
       const input = it.choices
         ? `<select class="gap ${mark} ${keyMode ? "key-sel" : ""}" ${keyMode ? `data-ex="${esc(ex.id)}" data-item="${esc(it.id)}" title="The choices the student sees; the key is selected"` : attrs}><option value="">${esc(ex.ph || "choose…")}</option>${it.choices.map((c) => `<option value="${esc(c)}" ${kv === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
         : `<input class="gap ${ex.box ? "box" : ""} ${mark}" ${attrs} value="${esc(val)}" size="${size}" ${ex.box ? `style="width:${size + 1}ch"` : ""} ${NOAUTO}>`;
-      if (ex.inline) { inlineCtl[it.id] = `${ex.inlineNums === false ? "" : `<span class="gn">${esc(it.id)}</span>`}${input}${corr}${keyHint}`; return ""; }
+      if (ex.inline) { inlineCtl[it.id] = `${ex.inlineNums === false ? "" : `<span class="gn">${esc(it.id)}</span>`}${input}${corr}${keyHint}${stat(it.id)}`; return ""; }
       body = (it.text || "").includes("___") ? it.text.replace("___", input) : `<span class="li-t">${it.text || ""}</span>${input}`;
-      body += corr + keyHint;
+      body += corr + keyHint + stat(it.id);
     } else if (ex.kind === "match") {
-      const mv = o.key && o.key[it.id] !== undefined && !o.answers ? firstKey(o.key[it.id]) : val;
+      const keyM = !!(o.key && o.key[it.id] !== undefined && (!o.answers || (o.practice && val === "")));
+      const mv = keyM ? firstKey(o.key[it.id]) : val;
       const opts = (ex.options || []).map((op) =>
         `<option value="${esc(op.id)}" ${mv === op.id ? "selected" : ""}>${ex.plain ? "" : esc(op.id) + ". "}${esc(stripTags(op.text))}</option>`).join("");
-      const keyM = !!(o.key && o.key[it.id] !== undefined && !o.answers);
-      body = `<span class="m-word">${it.text}</span> <select class="gap ${mark} ${keyM ? "key-sel" : ""}" ${keyM ? `data-ex="${esc(ex.id)}" data-item="${esc(it.id)}"` : attrs}><option value="">choose…</option>${opts}</select>${corr}${keyHint}`;
+      body = `<span class="m-word">${it.text}</span> <select class="gap ${mark} ${keyM ? "key-sel" : ""}" ${keyM ? `data-ex="${esc(ex.id)}" data-item="${esc(it.id)}"` : attrs}><option value="">choose…</option>${opts}</select>${corr}${keyHint}${stat(it.id)}`;
     } else if (ex.kind === "mcq") {
       const name = `${ex.id}__${it.id}`;
       const letters = "ABCDEFGH";
@@ -232,7 +280,7 @@ export function renderExercise(ex, o = {}) {
         const cls = r && val === L ? (r.ok ? "ok" : "bad") : (o.key && o.key[it.id] === L ? "right" : "");
         return `<label class="${cls}"><input type="radio" name="${esc(name)}" value="${L}" ${val === L ? "checked" : ""} ${attrs}><span class="l">${L}</span><span>${t}</span></label>`;
       }).join("");
-      body = `${it.text}<div class="mcq ${ex.columns === 2 ? "cols2" : ""}">${opts}</div>${corr}`;
+      body = `${it.text}${stat(it.id)}<div class="mcq ${ex.columns === 2 ? "cols2" : ""}">${opts}</div>${corr}`;
     } else if (ex.kind === "open") {
       const m = o.manual?.[it.id];
       const max = itemMax(ex, it);
@@ -268,7 +316,7 @@ export function renderExercise(ex, o = {}) {
       const mark = r ? (r.ok ? "ok" : "bad") : "";
       const corr = r && !r.ok && r.correct ? `<span class="corr">Correct: ${esc(r.correct)}</span>` : "";
       const keyHint = o.key && o.key[it.id] !== undefined ? `<span class="keyhint">✓ ${esc(keyText(o.key[it.id]))}</span>` : "";
-      return `<li><span class="m-word">${it.text}</span> <input class="gap ${mark}" style="width:5ch" maxlength="2" data-ex="${esc(ex.id)}" data-item="${esc(it.id)}" ${dis} value="${esc(val)}" ${NOAUTO}>${corr}${keyHint}</li>`;
+      return `<li><span class="m-word">${it.text}</span> <input class="gap ${mark}" style="width:5ch" maxlength="2" data-ex="${esc(ex.id)}" data-item="${esc(it.id)}" ${dis} value="${esc(val)}" ${NOAUTO}>${corr}${keyHint}${stat(it.id)}</li>`;
     }).join("");
     const right = (ex.options || []).map((op) => `<li>${op.text}</li>`).join("");
     body = `<div class="match"><ol class="m-left">${left}</ol><ol class="m-right" type="a">${right}</ol></div>`;
@@ -277,11 +325,12 @@ export function renderExercise(ex, o = {}) {
   // sentences to translate in Russian or in Chinese: the student chooses the language
   const hasZh = (ex.items || []).some((it) => it.zh);
   const langSw = hasZh ? `<span class="lang-sw" role="group" aria-label="Language of the sentences"><button type="button" data-lang="ru">Русский</button><button type="button" data-lang="zh" lang="zh-Hans">中文</button></span>` : "";
-  return `${o.before || ""}<section class="ex" id="ex-${esc(ex.id)}">
-  <div class="ex-h">${o.num ? `<span class="ex-n">${esc(o.num)}</span>` : ""}<span class="ex-t">${esc(ex.title || "")}</span>${langSw}${tag}${scoreLine}</div>
+  return `${o.before || ""}<section class="ex ${o.cls || ""}" id="ex-${esc(ex.id)}">
+  <div class="ex-h">${o.num ? `<span class="ex-n">${esc(o.num)}</span>` : ""}<span class="ex-t">${esc(ex.title || "")}</span>${langSw}${o.headExtra || ""}${tag}${scoreLine}</div>
   ${ex.rubric ? `<p class="ex-i">${ex.rubric}</p>` : ""}
   ${ex.display === "letters" ? "" : options}
   ${body}
+  ${o.after || ""}
 </section>`;
 }
 
