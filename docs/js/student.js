@@ -4,15 +4,15 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   sendPasswordResetEmail, signOut, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, query, orderBy,
   serverTimestamp,
-} from "./fb.js?v=20261022a";
-import { COURSE_TITLE } from "./firebase-config.js?v=20261022a";
+} from "./fb.js?v=20261027b";
+import { COURSE_TITLE } from "./firebase-config.js?v=20261027b";
 import {
-  esc, renderBlocks, readInput, fmtTime, friendlyError, authFormHTML, wireAuthForm, subId, exercisesOf, isAuto,
-  isTeacherChecked, wireFlashcards, countWords, DONE, doneMap, exerciseNumbers, planTag, unitNo, unitLabel, wireLang,
-} from "./common.js?v=20261022a";
-import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261022a";
-import { feedbackHTML } from "./writing.js?v=20261022a";
-import "./speaking.js?v=20261022a";
+  esc, renderBlocks, readInput, fmtTime, friendlyError, authFormHTML, wireAuthForm, subId, exercisesOf, isAuto, isPractice,
+  isTeacherChecked, wireFlashcards, countWords, DONE, doneMap, exerciseNumbers, planTag, unitNo, unitLabel, wireLang, gradeExercise,
+} from "./common.js?v=20261027b";
+import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261027b";
+import { feedbackHTML } from "./writing.js?v=20261027b";
+import "./speaking.js?v=20261027b";
 
 const $ = (s) => document.querySelector(s);
 const S = {
@@ -28,6 +28,7 @@ const S = {
   unsub: [], unitUnsub: {}, resultUnsub: {},
   registering: false,
 };
+const LOCAL_NOTE = "Saved on this device. Click Done to send the exercise to your teacher.";
 const SAVE_DELAY = 1000;
 let saveTimer = null;
 
@@ -162,8 +163,7 @@ function ensureUnit(unitId) {
       const serverMs = server.updatedAt?.toMillis?.() || 0;
       if (local && local.ts > serverMs && server.status !== "submitted" && !isReleased(unitId)) {
         S.sub[unitId].answers = local.answers;
-        S.sub[unitId].dirty = true;
-        scheduleSave(unitId);
+        S.sub[unitId].dirty = true;   // kept on this device; sent only when the student clicks Done
       }
     } else if (!snap.metadata.hasPendingWrites) {
       // обновляем статус; ответы — только если у нас нет несохранённых правок
@@ -251,8 +251,8 @@ function renderMain() {
   }
   ensureUnit(unit.id);
   const c = S.content[unit.id], sub = S.sub[unit.id];
-  if (c === undefined || !sub) { content.innerHTML = `<p class="muted">Loading…</p>`; return; }
-  if (c === null) { content.innerHTML = `<div class="locked-msg">You do not have access to ${esc(uLabel(unit))}.</div>`; return; }
+  if (c === undefined || !sub) { content.dataset.view = ""; content.innerHTML = `<p class="muted">Loading…</p>`; return; }
+  if (c === null) { content.dataset.view = ""; content.innerHTML = `<div class="locked-msg">You do not have access to ${esc(uLabel(unit))}.</div>`; return; }
 
   const sec = c.sections.find((s) => s.id === r.section) || c.sections[0];
   const secIdx = c.sections.indexOf(sec) + 1;
@@ -266,9 +266,9 @@ function renderMain() {
   const plan = S.group.plan?.[unit.id] || {};
   const viewKey = `${unit.id}/${sec.id}/${readOnly}/${!!res}/${relEx.join(",")}/${(S.group.feedbackEx?.[unit.id] || []).join(",")}/${S.exrVer}/${JSON.stringify(done)}/${JSON.stringify(plan)}`;
 
-  // do not re-render while the student is typing (keeps the cursor in place)
-  const active = document.activeElement;
-  if (content.dataset.view === viewKey && active?.dataset?.item && content.contains(active)) {
+  // nothing on the page has changed (e.g. a draft came back from the database): only the bar is updated,
+  // so the page does not jump and the cursor stays in place
+  if (content.dataset.view === viewKey && content.dataset.unit === unit.id && !content.dataset.test) {
     renderUnitBar(unit, sub, released, res);
     return;
   }
@@ -282,6 +282,8 @@ function renderMain() {
       const fb = fbOn && !res ? S.exr[unit.id]?.feedback?.[ex.id] : null;
       const fbAt = S.exr[unit.id]?.feedbackAt?.[ex.id];
       const isDone = !!done[ex.id];
+      // self-check exercises (Supplementary Exercises): the key comes with the exercise, "Check my answers" shows the result at once
+      const selfRes = ex.self && ex.selfKey && isDone && !exDone ? gradeExercise(ex, sub.answers?.[ex.id] || {}, ex.selfKey).items : undefined;
       const factor = res ? res.factors?.[ex.id] : exDone ? S.exr[unit.id]?.factors?.[ex.id] : undefined;
       return {
         itemExtra: fb ? (itemId) => feedbackHTML(fb[itemId], { checkedAt: fmtTime(fbAt) }) : null,
@@ -291,10 +293,10 @@ function renderMain() {
         factor,
         cls: isDone || exDone ? "is-done" : "",
         after: readOnly || exDone ? "" : doneFootHTML(ex, isDone, sub.answers?.[ex.id]),
-        auto: res ? (isAuto(ex) ? res.auto?.[ex.id] || {} : null) : exDone ? S.exr[unit.id]?.items?.[ex.id] || {} : undefined,
+        auto: isPractice(ex) ? selfRes : res ? (isAuto(ex) ? res.auto?.[ex.id] || {} : null) : exDone ? S.exr[unit.id]?.items?.[ex.id] || {} : selfRes,
         manual: res?.manual?.[ex.id],
-        showPending: !!res,
-        tag: ex.check === "teacher" && !res ? (exDone ? "Checked" : fb ? "Feedback ready – you can correct your text" : "Checked by your teacher") : "",
+        showPending: !!res && !isPractice(ex),
+        tag: ex.self && ex.selfKey && !exDone ? "Self-check · not marked" : isPractice(ex) && !res ? "Practice · not marked" : ex.check === "teacher" && !res ? (exDone ? "Checked" : fb ? "Feedback ready – you can correct your text" : "Checked by your teacher") : "",
       };
     }, `${unitNum(unit)}.${secIdx}`) + pagerHTML(unit, c, sec);
   renderUnitBar(unit, sub, released, res);
@@ -306,12 +308,15 @@ function renderMain() {
 // (they can open it again with "Change my answers"), and the unit can be submitted only when
 // all its exercises are done.
 function doneFootHTML(ex, isDone, ans) {
+  const self = ex.self && ex.selfKey;
+  if (isDone && self) return `<div class="ex-foot done"><span class="ok-mark">✓ Checked</span>
+    <button class="btn small" type="button" data-undone="${esc(ex.id)}">Try again</button></div>`;
   if (isDone) return `<div class="ex-foot done"><span class="ok-mark">✓ Done</span>
     <button class="btn small" type="button" data-undone="${esc(ex.id)}">Change my answers</button></div>`;
   const total = (ex.items || []).length;
   const filled = (ex.items || []).filter((it) => String(ans?.[it.id] ?? "").trim()).length;
-  return `<div class="ex-foot"><span class="muted">${filled} of ${total} answered</span>
-    <button class="btn small primary" type="button" data-done="${esc(ex.id)}">Done</button></div>`;
+  return `<div class="ex-foot"><span class="muted" data-foot="${esc(ex.id)}">${filled} of ${total} answered</span>
+    <button class="btn small primary" type="button" data-done="${esc(ex.id)}">${self ? "Check my answers" : "Done"}</button></div>`;
 }
 let pendingScroll = null;
 function scrollToEx(exId) {
@@ -330,7 +335,7 @@ $("#content").addEventListener("click", (e) => {
   if (d.dataset.done) {
     const ex = exercisesOf(S.content[unitId]).find((x) => x.id === exId);
     const empty = (ex?.items || []).filter((it) => !String(sub.answers?.[exId]?.[it.id] ?? "").trim()).length;
-    if (empty && !confirm(`${empty} of ${(ex.items || []).length} items are still empty. Mark this exercise as done anyway?`)) return;
+    if (empty && !confirm(`${empty} of ${(ex.items || []).length} items are still empty. ${ex?.self && ex?.selfKey ? "Check your answers anyway?" : "Mark this exercise as done anyway?"}`)) return;
   }
   sub.answers ??= {};
   const map = { ...doneMap(sub.answers) };
@@ -378,10 +383,10 @@ function renderUnitBar(unit, sub, released, res) {
       ? `<div class="ub ub-ret"><b>Your teacher has returned this work for revision${sub.returnedAt?.toDate ? ` (${fmtTime(sub.returnedAt)})` : ""}.</b>
          ${sub.returnNote ? `<span class="ret-note">${esc(sub.returnNote)}</span>` : ""}<span class="muted">Make your changes and submit ${esc(uLabel(unit))} again.</span></div>` : "";
     const p = doneProgress(unit, sub);
-    html = ret + `<div class="ub"><span id="save-state" class="muted">${sub.dirty ? "Unsaved changes…" : sub.updatedAt ? "Draft saved " + fmtTime(sub.updatedAt) : "Your answers are saved automatically"}</span>
+    html = ret + `<div class="ub"><span id="save-state" class="muted">${sub.dirty ? LOCAL_NOTE : sub.updatedAt ? "Sent to your teacher " + fmtTime(sub.updatedAt) : "Your answers are kept on this device until you click Done"}</span>
       <span class="ub-done"><b>${p.done} / ${p.total}</b> exercises done</span>
       <button class="btn primary" id="submit-unit" ${p.left.length ? `disabled title="Mark every exercise as Done first"` : ""}>Submit ${esc(uLabel(unit))}</button>
-      ${p.left.length ? `<div class="ub-left">Click <b>Done</b> under each exercise when you finish it. You can submit ${esc(uLabel(unit))} when all exercises are done. Not done yet:
+      ${p.left.length ? `<div class="ub-left">Click <b>Done</b> under each exercise when you finish it. You can submit ${esc(uLabel(unit))} when all of them are done (Supplementary Exercises are optional practice and are not marked). Not done yet:
         ${p.left.slice(0, 12).map((x) => `<a href="#${esc(unit.id)}/${esc(x.sectionId)}" data-goto-ex="${esc(unit.id)}|${esc(x.sectionId)}|${esc(x.id)}">${esc(x.num)}</a>`).join(" ")}${p.left.length > 12 ? ` <span class="muted">and ${p.left.length - 12} more</span>` : ""}</div>` : ""}</div>`;
   }
   bar.innerHTML = html;
@@ -407,8 +412,12 @@ function onAnswer(e) {
   sub.answers[el.dataset.ex][el.dataset.item] = v;
   sub.dirty = true;
   writeLocal(unitId, sub.answers);
-  setSaveState("Editing…");
-  scheduleSave(unitId);
+  // answers stay on this device; they go to the teacher only when the student clicks Done
+  setSaveState(LOCAL_NOTE);
+  // the "N of M answered" counter under the exercise is updated in place (no re-render)
+  const foot = document.querySelector(`[data-foot="${CSS.escape(el.dataset.ex)}"]`);
+  const ex = foot && exercisesOf(S.content[unitId]).find((x) => x.id === el.dataset.ex);
+  if (ex) foot.textContent = `${(ex.items || []).filter((it) => String(sub.answers[ex.id]?.[it.id] ?? "").trim()).length} of ${(ex.items || []).length} answered`;
 }
 
 function scheduleSave(unitId) {
@@ -452,8 +461,8 @@ async function saveDraft(unitId, status = "draft", retry = true) {
     sub.status = status;
     if (status === "submitted") sub.submittedAt = new Date();
     S.server[unitId] = structuredClone(data.answers);
-    clearLocal(unitId);
-    setSaveState("✓ Saved " + fmtTime(new Date()));
+    if (sub.dirty) writeLocal(unitId, sub.answers); else clearLocal(unitId);
+    setSaveState("✓ Sent to your teacher " + fmtTime(new Date()));
   } catch (e) {
     sub.dirty = true;
     // the teacher may have just checked an exercise: take the checked answers and try once more
@@ -469,7 +478,8 @@ async function saveDraft(unitId, status = "draft", retry = true) {
 async function flushSave() {
   clearTimeout(saveTimer);
   const unitId = $("#content").dataset.unit;
-  if (unitId && S.sub[unitId]?.dirty) await saveDraft(unitId).catch(() => {});
+  // answers are sent only by Done: here they are only kept on this device
+  if (unitId && S.sub[unitId]?.dirty) writeLocal(unitId, S.sub[unitId].answers);
 }
 document.addEventListener("visibilitychange", () => { if (document.hidden) flushSave(); });
 window.addEventListener("pagehide", () => flushSave());
@@ -496,7 +506,9 @@ function doneProgress(unit, sub) {
   const c = S.content[unit.id];
   const nums = exerciseNumbers(c, unitNum(unit));
   const done = doneMap(sub.answers), checked = S.group?.releasedEx?.[unit.id] || [];
-  const all = exercisesOf(c).map((ex) => ({ ...ex, num: nums[ex.id] }));
+  // Supplementary Exercises are optional: they are not needed to submit the week
+  const optional = (ex) => ex.sectionId === "supplementary" || /^supplementary/i.test(ex.sectionTitle || "");
+  const all = exercisesOf(c).filter((ex) => !optional(ex)).map((ex) => ({ ...ex, num: nums[ex.id] }));
   const left = all.filter((ex) => !done[ex.id] && !checked.includes(ex.id));
   return { total: all.length, done: all.length - left.length, left };
 }

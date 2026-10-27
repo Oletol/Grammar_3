@@ -32,6 +32,7 @@ const page = async (url) => {
   return p;
 };
 const shot = (p, n) => p.screenshot({ path: `${SHOTS}/${n}.png`, fullPage: false });
+
 const step = (t) => console.log("•", t);
 // every exercise must be marked "Done" before the unit can be submitted: go through the links in the unit bar
 async function markAllDone(p) {
@@ -114,6 +115,17 @@ await s1.fill(sel("g1", "1"), "sends");
 await s1.fill(sel("g1", "2"), "gives");
 await s1.fill(sel("g1", "5"), "dont understand");
 await s1.fill(sel("g1", "10"), "Are you avoiding");
+// the page is not drawn again while the student types or chooses (it used to jump)
+await s1.evaluate(() => { window.__redraws = 0; new MutationObserver(() => window.__redraws++).observe(document.querySelector("#content"), { childList: true }); window.scrollTo(0, 400); });
+await s1.locator(sel("g1", "3")).pressSequentially("has been working", { delay: 30 });
+await s1.locator(sel("g1", "4")).pressSequentially("knows", { delay: 30 });
+await s1.waitForTimeout(2500);
+assert.equal(await s1.evaluate(() => window.__redraws), 0, "the page is not redrawn while typing");
+assert.equal(await s1.evaluate(() => document.activeElement?.dataset?.item), "4", "the cursor stays in the field");
+// Safari does not focus radio buttons and menus on click: the page must not be redrawn either
+await s1.evaluate(() => { document.activeElement.blur(); const el = document.querySelector('[data-ex="g1"][data-item="6"]'); el.value = "is"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+await s1.waitForTimeout(2500);
+assert.equal(await s1.evaluate(() => window.__redraws), 0, "the page is not redrawn after an answer without focus");
 await s1.click('.sb-item:has-text("Writing")');
 await s1.fill(sel("w2", "1"), "Miscommunication often starts with the wrong channel. Last year our dean's office sent exam changes by email only...");
 await s1.locator("#save-state", { hasText: /Saved|saved/ }).waitFor({ timeout: 5000 });
@@ -143,6 +155,15 @@ const copyBlocked = await s1.evaluate(() => { const e = new Event("copy", { bubb
 assert.equal(copyBlocked, true, "копирование заблокировано");
 assert.equal(await s1.evaluate(() => getComputedStyle(document.querySelector("#content .ex-i")).userSelect), "none");
 
+step("Ответы хранятся на устройстве и уходят преподавателю только по Done");
+let dbLocal = await s1.evaluate(() => JSON.parse(localStorage.getItem("mock:db")));
+assert.ok(!Object.keys(dbLocal).some((k) => k.startsWith("submissions/")), "до Done в базу ничего не отправлено");
+await s1.click('[data-done="m1"]');
+await s1.locator("#save-state", { hasText: /Sent to your teacher/ }).waitFor({ timeout: 5000 });
+dbLocal = await s1.evaluate(() => JSON.parse(localStorage.getItem("mock:db")));
+const subKey = Object.keys(dbLocal).find((k) => k.startsWith("submissions/"));
+assert.equal(dbLocal[subKey].answers.m1["1"], "B", "после Done ответы в базе");
+
 step("Преподаватель проверяет одно упражнение, студент видит результат сразу");
 await t.click('.sb-uh[data-unit="u1"]').catch(() => {});
 await t.click('.sb-item:has-text("Warm-up")');
@@ -163,7 +184,8 @@ await s1.fill(sel("m3", "1"), "reply to your message");
 await s1.fill(sel("m3", "8"), "Block him");
 await s1.fill(sel("m4", "1"), "with");
 await s1.fill(sel("m4", "2"), "of");
-await s1.locator("#save-state", { hasText: /Saved|saved/ }).waitFor({ timeout: 5000 });
+await s1.click('[data-done="m3"]'); await s1.click('[data-done="m4"]');
+await s1.locator("#save-state", { hasText: /Sent to your teacher/ }).waitFor({ timeout: 5000 });
 assert.equal(await s1.locator("#ex-m3 .ex-tag").textContent(), "Checked by your teacher");
 await t.click('[data-act="check-ex"][data-ex="m4"]');
 await s1.waitForSelector("#ex-m4 .ex-score", { timeout: 5000 });
@@ -223,7 +245,8 @@ const t1 = "The person I send messages to most often is my sister, who has went 
 await s1.fill(sel("m5", "1"), t1);
 assert.equal((await s1.textContent('[data-wc="m5:1"]')).trim(), String(t1.split(/\s+/).length));
 await s1.fill(sel("m5", "2"), "I usually reply to messages at once, but when I am at a lecture I mute the group chat and go offline for an hour.");
-await s1.waitForTimeout(2500);
+await s1.click('[data-done="m5"]');
+await s1.waitForTimeout(500);
 await t.evaluate(() => { location.hash = "#u1/warmup"; });
 await t.waitForSelector('[data-act="check-writing"][data-ex="m5"]');
 await t.click('[data-act="check-writing"][data-ex="m5"]');
@@ -233,6 +256,7 @@ assert.equal(await s1.locator("#ex-m5 mark.lt").first().textContent(), "has went
 const fbText = await s1.textContent("#ex-m5 .wfb");
 assert.ok(fbText.includes("has gone"), "предложено исправление");
 assert.ok(/Unit phrases used \(\d+ of \d+\): .*keep in touch/.test(fbText), "учтены фразы юнита");
+await s1.click('[data-undone="m5"]');
 assert.equal(await s1.locator(sel("m5", "1")).isDisabled(), false, "текст можно исправить");
 await s1.locator("#ex-m5 li").first().screenshot({ path: `${SHOTS}/20-writing-feedback.png` });
 await s1.fill(sel("m5", "1"), t1.replace("has went", "has gone"));
@@ -242,7 +266,8 @@ step("1.1.6 с проверкой по кнопке, 1.1.7 карточки дл
 await s1.fill(sel("m6", "1"), "catch");
 await s1.fill(sel("m6", "12"), "sorry");
 await s1.fill(sel("m6", "2"), "say");
-await s1.waitForTimeout(2500);
+await s1.click('[data-done="m6"]');
+await s1.waitForTimeout(500);
 assert.equal(await s1.locator("#ex-m6 .ex-score").count(), 0, "до проверки результата нет");
 await t.click('[data-act="check-ex"][data-ex="m6"]');
 await s1.waitForSelector("#ex-m6 .ex-score", { timeout: 5000 });
@@ -263,8 +288,10 @@ await t.click('a[href="#tools/works"]');
 await t.waitForSelector("text=Anna Ivanova");
 await t.waitForSelector(".pill.warn:text('draft')");
 
-step("Студент 1 сдаёт работу");
-await markAllDone(s1); await s1.click("#submit-unit");
+step("Студент 1 сдаёт работу (сначала отмечает упражнения как выполненные)");
+assert.ok(await s1.locator("#submit-unit").isDisabled(), "без отметок Done сдать нельзя");
+await markAllDone(s1);
+await s1.click("#submit-unit");
 await s1.waitForSelector(".ub-sub");
 await s1.click('.sb-item:has-text("Grammar in Use")');
 assert.equal(await s1.locator(sel("g1", "1")).isDisabled(), true);

@@ -4,16 +4,16 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword, sendPasswordResetEmail, signOut,
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, orderBy,
   writeBatch, arrayUnion, arrayRemove, serverTimestamp, deleteField,
-} from "./fb.js?v=20261022a";
-import { COURSE_TITLE } from "./firebase-config.js?v=20261022a";
+} from "./fb.js?v=20261027b";
+import { COURSE_TITLE } from "./firebase-config.js?v=20261027b";
 import {
-  esc, renderBlocks, renderExercise, exercisesOf, isAuto, gradeAuto, buildResult, keyText, norm,
+  esc, renderBlocks, renderExercise, exercisesOf, isAuto, isPractice, gradeAuto, buildResult, keyText, norm,
   fmtTime, friendlyError, authFormHTML, wireAuthForm, subId, KIND_LABEL, isTeacherChecked, gradeExercise, wireFlashcards, isManual,
   isCorrect, readInput, doneMap, isTranslation, exerciseNumbers, fmtDate, todayISO, answerLabel, r2, unitNo, unitLabel, wireLang,
-} from "./common.js?v=20261022a";
-import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261022a";
-import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, sleep } from "./writing.js?v=20261022a";
-import "./speaking.js?v=20261022a";
+} from "./common.js?v=20261027b";
+import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261027b";
+import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, sleep } from "./writing.js?v=20261027b";
+import "./speaking.js?v=20261027b";
 
 const $ = (s) => document.querySelector(s);
 const ls = {
@@ -255,7 +255,7 @@ function viewUnit(r) {
       return {
         key: d.keys[ex.id] || {}, readOnly: false, practice: true,
         answers: mine[ex.id] || {},
-        tag: ex.check === "teacher" ? (isManual(ex) ? "Writing check by the teacher" : "Checked by the teacher") : "",
+        tag: ex.self ? "Self-check by the student · not marked" : isPractice(ex) ? "Practice · not marked" : ex.check === "teacher" ? (isManual(ex) ? "Writing check by the teacher" : "Checked by the teacher") : "",
         before: g ? toolsBar(u, ex, g, st) : "",
         itemStat: st.items ? (itemId) => `<span class="istat" data-is="${esc(ex.id)}|${esc(itemId)}">${itemBadge(ex, st.items[itemId])}</span>` : null,
         after: st.items ? `<div class="mist" data-mi="${esc(ex.id)}" ${T.mistOpen.has(ex.id) ? "" : "hidden"}>${mistakesHTML(ex, st)}</div>` : "",
@@ -281,7 +281,7 @@ async function downloadDocx(unitId, ver, btn) {
   try {
     const d = await loadUnitData(unitId);
     if (!d?.content) throw new Error("This unit has no content yet.");
-    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261022a");
+    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261027b");
     const teacher = ver === "teacher";
     const sections = d.content.sections.map((s) => ({ ...s, subtitle: (u.sections || []).find((m) => m.id === s.id)?.subtitle || s.subtitle || "" }));
     const blob = await exportUnitDocx({ courseTitle: COURSE_TITLE, unitNum: unitNum(u), unitLabel: uLabel(u), unitTitle: u.title, sections,
@@ -738,7 +738,7 @@ function viewWorks() {
   const subBy = Object.fromEntries(T.subs.map((s) => [s.uid, s]));
   const exs = exercisesOf(data.content);
   const totalItems = exs.reduce((n, ex) => n + (ex.items || []).length, 0);
-  const openTotal = exs.filter((ex) => !isAuto(ex)).reduce((n, ex) => n + ex.items.length, 0);
+  const openTotal = exs.filter((ex) => !isAuto(ex) && !isPractice(ex)).reduce((n, ex) => n + ex.items.length, 0);
   const rows = T.students.map((st) => {
     const s = subBy[st.uid], r = T.results[st.uid];
     const filled = s ? exs.reduce((n, ex) => n + (ex.items || []).filter((it) => String(s.answers?.[ex.id]?.[it.id] ?? "").trim()).length, 0) : 0;
@@ -793,7 +793,7 @@ function studentDetail(uid, data) {
       auto: isAuto(ex) ? auto.items[ex.id] : undefined,
       factor: f[ex.id],
       manual: r?.manual?.[ex.id],
-      grading: isManual(ex),
+      grading: isManual(ex) && !isPractice(ex),
       itemExtra: T.exr?.[uid]?.feedback?.[ex.id] ? (itemId) => feedbackHTML(T.exr[uid].feedback[ex.id][itemId], { checkedAt: fmtTime(T.exr[uid].feedbackAt?.[ex.id]) }) : null,
     })).join("");
   }).join("");
@@ -948,7 +948,9 @@ function stripExercise(b, seen, where) {
     else if (b.kind === "open" && answer) keys[rest.id] = answer;   // model answer, teacher only
     return rest;
   });
-  return { ex: { ...b, type: "exercise", items }, keys };
+  // self-check exercises ("self": true, the Supplementary Exercises): the key goes with the exercise, so that the student can check it at once
+  const self = b.self && b.kind !== "open" && b.graded !== false && Object.keys(keys).length ? { selfKey: keys } : {};
+  return { ex: { ...b, type: "exercise", items, ...self }, keys };
 }
 
 function splitUnit(u) {

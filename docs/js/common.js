@@ -54,6 +54,8 @@ export const KIND_LABEL = { gap: "Gap fill", match: "Matching", mcq: "Multiple c
 export const isAuto = (ex) => ex.kind !== "open" && ex.graded !== false;
 // marked by the teacher by hand
 export const isManual = (ex) => ex.kind === "open" && ex.graded !== false;
+// practice only (Supplementary Exercises): never counted in the score of the week
+export const isPractice = (ex) => !!(ex?.practice || ex?.self);
 // checked by the teacher separately, exercise by exercise ("check": "teacher")
 export const isTeacherChecked = (ex) => isAuto(ex) && ex.check === "teacher";
 const NOAUTO = `autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"`;
@@ -104,7 +106,7 @@ export function gradeAuto(content, answers, keys) {
   const items = {};
   let score = 0, max = 0;
   for (const ex of exercisesOf(content)) {
-    if (!isAuto(ex)) continue;
+    if (!isAuto(ex) || isPractice(ex)) continue;
     items[ex.id] = {};
     for (const it of ex.items || []) {
       const given = answers?.[ex.id]?.[it.id] ?? "";
@@ -145,7 +147,7 @@ export function buildResult({ sub, content, keys, manual = {}, showCorrect = tru
     aScore += Object.values(items).filter((r) => r.ok).length * (factors[exId] ?? 1);
   let mScore = 0, mMax = 0, pending = 0;
   for (const ex of exercisesOf(content)) {
-    if (!isManual(ex)) continue;
+    if (!isManual(ex) || isPractice(ex)) continue;
     for (const it of ex.items || []) {
       mMax += itemMax(ex, it);
       const g = manual?.[ex.id]?.[it.id];

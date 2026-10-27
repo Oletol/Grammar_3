@@ -15,10 +15,8 @@ const u1 = course.units.find((u) => u.id === "w7");
 const exById = Object.fromEntries(u1.sections.flatMap((s) => s.blocks.filter((b) => b.type === "exercise").map((b) => [b.id, { ...b, sec: s.id }])));
 const key = (ex, it) => { const a = exById[ex].items.find((x) => x.id === it).answer; return Array.isArray(a) ? a[0] : a; };
 
-const browser = await chromium.launch({
-  executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
-  args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
-});
+const LAUNCH = { args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] };
+const browser = await chromium.launch({ ...LAUNCH, executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch(LAUNCH));
 const ctx = await browser.newContext({ viewport: { width: 1360, height: 950 }, permissions: ["microphone"] });
 await ctx.route("**/js/fb.js*", (r) => r.fulfill({ contentType: "text/javascript", body: mock }));
 const errors = [];
@@ -130,9 +128,14 @@ assert.ok((await s1.textContent("#ex-s6 .ex-plan")).includes("In-Class"));
 assert.ok((await s1.textContent("#ex-n3 .ex-plan")).includes("HA"));
 await s1.fill(sel("s6", "1"), key("s6", "1"));
 await s1.fill(sel("s6", "2"), "wrong answer");
+await s1.waitForTimeout(800);
+assert.equal(await t.locator('[data-is="s6|1"] .ib-ok').count(), 0, "answers are not sent before Done");
+await s1.click('[data-done="s6"]');
+await s1.waitForTimeout(1600);   // the mock keeps the whole database in one localStorage entry: two saves at the same moment can overwrite each other
 await s2.fill(sel("s6", "1"), key("s6", "1"));
 await s2.fill(sel("s6", "2"), "wrong answer");
-await s1.waitForTimeout(1600);
+await s2.click('[data-done="s6"]');
+await s2.waitForTimeout(1600);
 await t.waitForSelector('[data-is="s6|1"] .ib-ok:text("✓2")', { timeout: 6000 });
 await t.waitForSelector('[data-is="s6|2"] .ib-bad:text("✗2")');
 assert.equal(await t.inputValue(sel("s6", "1")), "teacher's try", "live statistics do not wipe what the teacher typed");
@@ -143,6 +146,9 @@ await t.waitForSelector('[data-mi="s6"]:not([hidden]) .mw');
 assert.ok((await t.textContent('[data-mi="s6"]')).includes("Anna Ivanova"));
 await t.locator("#ex-s6").evaluate((el) => { el.previousElementSibling.scrollIntoView(); window.scrollBy(0, -70); });
 await shot(t, "02-teacher-exercise-stats");
+
+await s1.click('[data-undone="s6"]');
+await s1.waitForTimeout(1600);
 
 step("Students: Done locks the exercise; Change my answers opens it again; Submit waits for all exercises");
 assert.equal(await s1.locator("#submit-unit").isDisabled(), true, "Submit is closed until all exercises are done");
@@ -155,7 +161,7 @@ await s1.waitForSelector('#ex-s6 [data-done="s6"]');
 assert.equal(await s1.locator(sel("s6", "1")).isDisabled(), false);
 await s1.click('[data-done="s6"]');
 await s1.waitForSelector("#ex-s6 .ex-foot.done");
-await t.waitForSelector('[data-ts="s6"]:has-text("done 1/2")', { timeout: 6000 });
+await t.waitForSelector('[data-ts="s6"]:has-text("done 2/2")', { timeout: 6000 });
 await s1.locator("#unit-bar").screenshot({ path: `${SHOTS}/04-student-unit-bar.png` });
 await s1.locator("#ex-n3").screenshot({ path: `${SHOTS}/04b-student-exercise.png` });
 // a link to an exercise in another section
@@ -214,6 +220,35 @@ const db2 = await t.evaluate(() => JSON.parse(localStorage.getItem("mock:db")));
 const rb = Object.values(db2).find((v) => v.unitId === "w7" && v.factors && v.score !== undefined && v.factors.s6 === 0.25);
 assert.ok(rb, "the unit result keeps the 25% rule");
 console.log("   Boris, whole unit:", rb.score, "/", rb.max);
+assert.ok(!("p5" in rb.auto) && !("sfn" in rb.auto), "Supplementary Exercises are not in the score of the week");
+const suppItems = ["p5", "sfn"].reduce((n, id) => n + exById[id].items.length, 0);
+assert.ok(suppItems > 0 && rb.max === 219 - suppItems, "the maximum no longer includes Supplementary Exercises: " + rb.max);
+
+step("Supplementary Exercises: the student checks them at once (Check my answers / Try again); they are optional");
+await t.click('a[href="#tools/access"]');
+await t.click('[data-act="toggle-open"][data-unit="w8"]');
+await s1.evaluate(() => { location.hash = "#w8/supplementary"; });
+await s1.waitForSelector(sel("s4", "1"), { timeout: 8000 });
+assert.equal((await s1.textContent('[data-done="s4"]')).trim(), "Check my answers");
+assert.equal((await s1.textContent('[data-done="s5"]')).trim(), "Done", "open tasks keep Done");
+const k8 = (ex, it) => { const a = course.units.find((u) => u.id === "w8").sections.find((x) => x.id === "supplementary").blocks.find((b) => b.id === ex).items.find((x) => x.id === it).answer; return Array.isArray(a) ? a[0] : a; };
+await s1.fill(sel("s4", "1"), k8("s4", "1"));
+await s1.fill(sel("s4", "2"), "wrong answer");
+await s1.click('[data-done="s4"]');
+await s1.waitForSelector("#ex-s4 .ex-foot.done:has-text('Checked')");
+assert.ok(/\bok\b/.test(await s1.getAttribute(sel("s4", "1"), "class")), "a right answer is marked at once");
+assert.ok(/\bbad\b/.test(await s1.getAttribute(sel("s4", "2"), "class")), "a wrong answer is marked at once");
+assert.ok((await s1.textContent("#ex-s4")).includes("Correct:"), "the right answer is shown");
+await s1.locator("#ex-s4").screenshot({ path: `${SHOTS}/08-self-check.png` });
+await s1.click('[data-undone="s4"]');
+await s1.waitForSelector('#ex-s4 [data-done="s4"]');
+assert.equal(await s1.locator(sel("s4", "2")).isDisabled(), false, "Try again opens the exercise");
+assert.equal(await s1.locator("#ex-s4 .bad").count(), 0, "marks are gone after Try again");
+assert.equal(await s1.locator('.ub-left a[data-goto-ex*="|supplementary|"]').count(), 0, "Supplementary Exercises are not needed to submit");
+await t.evaluate(() => { location.hash = "#w8/supplementary"; });
+await t.waitForSelector("#ex-s4");
+assert.ok((await t.textContent("#ex-s4")).includes("Self-check by the student"));
+assert.ok(!(await t.textContent("#ex-s5")).includes("Self-check"), "open tasks are not self-checked");
 
 await browser.close();
 if (errors.length) { console.log("Page errors:\n" + errors.join("\n")); process.exit(1); }
