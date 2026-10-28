@@ -4,16 +4,16 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword, sendPasswordResetEmail, signOut,
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, orderBy,
   writeBatch, arrayUnion, arrayRemove, serverTimestamp, deleteField,
-} from "./fb.js?v=20261027b";
-import { COURSE_TITLE } from "./firebase-config.js?v=20261027b";
+} from "./fb.js?v=20261028a";
+import { COURSE_TITLE } from "./firebase-config.js?v=20261028a";
 import {
   esc, renderBlocks, renderExercise, exercisesOf, isAuto, isPractice, gradeAuto, buildResult, keyText, norm,
   fmtTime, friendlyError, authFormHTML, wireAuthForm, subId, KIND_LABEL, isTeacherChecked, gradeExercise, wireFlashcards, isManual,
   isCorrect, readInput, doneMap, isTranslation, exerciseNumbers, fmtDate, todayISO, answerLabel, r2, unitNo, unitLabel, wireLang,
-} from "./common.js?v=20261027b";
-import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261027b";
-import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, sleep } from "./writing.js?v=20261027b";
-import "./speaking.js?v=20261027b";
+} from "./common.js?v=20261028a";
+import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261028a";
+import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, sleep } from "./writing.js?v=20261028a";
+import "./speaking.js?v=20261028a";
 
 const $ = (s) => document.querySelector(s);
 const ls = {
@@ -281,7 +281,7 @@ async function downloadDocx(unitId, ver, btn) {
   try {
     const d = await loadUnitData(unitId);
     if (!d?.content) throw new Error("This unit has no content yet.");
-    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261027b");
+    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261028a");
     const teacher = ver === "teacher";
     const sections = d.content.sections.map((s) => ({ ...s, subtitle: (u.sections || []).find((m) => m.id === s.id)?.subtitle || s.subtitle || "" }));
     const blob = await exportUnitDocx({ courseTitle: COURSE_TITLE, unitNum: unitNum(u), unitLabel: uLabel(u), unitTitle: u.title, sections,
@@ -330,11 +330,13 @@ function exStats(ex) {
   const nameOf = (uid) => T.students.find((s) => s.uid === uid)?.name || "?";
   const subs = T.subs.filter((s) => inGroup.has(s.uid));
   let answered = 0, done = 0;
+  const doneNames = [];
   for (const s of subs) {
     if (Object.values(s.answers?.[ex.id] || {}).some((v) => String(v ?? "").trim())) answered++;
-    if (doneMap(s.answers)[ex.id] || s.status === "submitted") done++;
+    if (doneMap(s.answers)[ex.id] || (s.status === "submitted" && !isPractice(ex))) { done++; doneNames.push(nameOf(s.uid)); }
   }
-  const out = { answered, done, total: T.students.length };
+  const notDone = T.students.filter((st) => !doneNames.includes(st.name)).map((st) => st.name);
+  const out = { answered, done, total: T.students.length, doneNames, notDone };
   if (!isAuto(ex) || isTranslation(ex)) return out;
   let n = 0, ok = 0;
   out.items = {};
@@ -357,7 +359,7 @@ function exStats(ex) {
 }
 function statSummary(ex, st) {
   const parts = [`<span title="Students who have answered at least one item">answered <b>${st.answered}/${st.total}</b></span>`,
-    `<span title="Students who have clicked Done (or submitted the unit)">done <b>${st.done}/${st.total}</b></span>`];
+    `<span title="${esc((isPractice(ex) ? "Checked (Check my answers): " : "Done: ") + (st.doneNames.join(", ") || "nobody yet") + (st.notDone.length ? "\nNot yet: " + st.notDone.join(", ") : ""))}">${isPractice(ex) ? "checked" : "done"} <b>${st.done}/${st.total}</b></span>`];
   if (st.items) parts.push(st.pct === null ? `<span class="muted">no answers yet</span>`
     : `<span class="pct" style="color:${heat(st.pct)}" title="Correct answers among all answers given">correct <b>${st.pct}%</b></span>${st.wrong ? ` <span class="bad-n">${st.wrong} ${st.wrong === 1 ? "mistake" : "mistakes"}</span>` : ""}`);
   return parts.join(" · ");
@@ -739,12 +741,15 @@ function viewWorks() {
   const exs = exercisesOf(data.content);
   const totalItems = exs.reduce((n, ex) => n + (ex.items || []).length, 0);
   const openTotal = exs.filter((ex) => !isAuto(ex) && !isPractice(ex)).reduce((n, ex) => n + ex.items.length, 0);
+  const req = exs.filter((ex) => !isPractice(ex)), supp = exs.filter((ex) => isPractice(ex));
+  const nums = exerciseNumbers(data.content, unitNum(u));
   const rows = T.students.map((st) => {
     const s = subBy[st.uid], r = T.results[st.uid];
     const filled = s ? exs.reduce((n, ex) => n + (ex.items || []).filter((it) => String(s.answers?.[ex.id]?.[it.id] ?? "").trim()).length, 0) : 0;
     const auto = s ? gradeAuto(data.content, s.answers, data.keys) : null;
     const f = factorsFor(st.uid, u.id), fN = Object.keys(f).length;
-    const nDone = s ? exs.filter((ex) => doneMap(s.answers)[ex.id]).length : 0;
+    const nDone = s ? req.filter((ex) => doneMap(s.answers)[ex.id]).length : 0;
+    const sp = s ? suppOf(s, supp, data.keys, nums) : null;
     const status = !s ? `<span class="pill off">not started</span>` : s.status === "submitted" ? `<span class="pill on">submitted</span>` : s.returnedAt ? `<span class="pill warn">returned</span>` : `<span class="pill warn">draft</span>`;
     const openDone = r ? openTotal - (r.manualPending ?? openTotal) : 0;
     return `<tr class="${T.selected === st.uid ? "sel" : ""}">
@@ -752,7 +757,8 @@ function viewWorks() {
       <td>${status}</td>
       <td>${s ? fmtTime(s.status === "submitted" ? s.submittedAt : s.updatedAt) : ""}</td>
       <td class="num">${filled} / ${totalItems}</td>
-      <td class="num">${s ? `${nDone} / ${exs.length}` : ""}</td>
+      <td class="num">${s ? `${nDone} / ${req.length}` : ""}</td>
+      ${supp.length ? `<td class="num">${sp ? `<span title="${esc(sp.title)}">${sp.n} / ${supp.length}${sp.pct !== null ? `<br><small class="muted">${sp.pct}% correct</small>` : ""}</span>` : ""}</td>` : ""}
       <td class="num">${auto ? `${fN ? adjustedAuto(auto, f) : auto.score} / ${auto.max}` : ""}${fN ? `<br><span class="pill warn" title="Absent: ${fN} in-class ${fN === 1 ? "exercise counts" : "exercises count"} ${Math.round(ABSENT_FACTOR * 100)}%">absent · ${fN}</span>` : ""}</td>
       <td class="num">${openTotal ? `${openDone} / ${openTotal}` : "—"}</td>
       <td class="num">${r ? `<b>${r.score} / ${r.max}</b>` : ""}</td>
@@ -760,10 +766,25 @@ function viewWorks() {
     </tr>`;
   }).join("");
   return head + `
-    <p class="muted">The table updates live while students work. “Done” shows how many exercises the student has marked as done. “Auto” is a preliminary score against the keys (students do not see it until you release the results); for a student who was absent, in-class exercises of that lesson count ${Math.round(ABSENT_FACTOR * 100)}%. “Open” shows how many open answers you have already marked.</p>
-    <table class="t"><tr><th>Student</th><th>Status</th><th>Last change</th><th>Answered</th><th>Done</th><th>Auto</th><th>Open</th><th>Total</th><th></th></tr>
-    ${rows || `<tr><td colspan="9" class="muted">There are no students in this group yet.</td></tr>`}</table>
+    <p class="muted">The table updates live while students work. “Done” shows how many marked exercises the student has finished (Done clicked).${supp.length ? ` “Suppl.” shows how many Supplementary Exercises the student has checked (Check my answers) and the share of correct answers in them; point at the figure to see which exercises.` : ""} “Auto” is a preliminary score against the keys (students do not see it until you release the results); for a student who was absent, in-class exercises of that lesson count ${Math.round(ABSENT_FACTOR * 100)}%. “Open” shows how many open answers you have already marked.</p>
+    <table class="t"><tr><th>Student</th><th>Status</th><th>Last change</th><th>Answered</th><th>Done</th>${supp.length ? "<th>Suppl.</th>" : ""}<th>Auto</th><th>Open</th><th>Total</th><th></th></tr>
+    ${rows || `<tr><td colspan="${supp.length ? 10 : 9}" class="muted">There are no students in this group yet.</td></tr>`}</table>
     <div id="detail">${T.selected ? studentDetail(T.selected, data) : ""}</div>`;
+}
+
+// Supplementary (self-check) exercises of one student: how many are checked, which, and the share of correct answers
+function suppOf(s, supp, keys, nums) {
+  const done = supp.filter((ex) => doneMap(s.answers)[ex.id]);
+  let ok = 0, max = 0;
+  for (const ex of done) {
+    if (!isAuto(ex)) continue;
+    const g = gradeExercise(ex, s.answers?.[ex.id], keys?.[ex.id] || {});
+    ok += g.score; max += g.max;
+  }
+  const left = supp.filter((ex) => !done.includes(ex));
+  const title = (done.length ? `Checked: ${done.map((ex) => nums[ex.id]).join(", ")}` : "No Supplementary Exercises checked yet")
+    + (left.length && done.length ? `\nNot yet: ${left.map((ex) => nums[ex.id]).join(", ")}` : "");
+  return { n: done.length, pct: max ? Math.round((100 * ok) / max) : null, title };
 }
 
 // "Return for revision": a submitted work becomes editable again; on a draft it sends the student a comment.
