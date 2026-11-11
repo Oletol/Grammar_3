@@ -4,15 +4,15 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   sendPasswordResetEmail, signOut, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, query, orderBy,
   serverTimestamp,
-} from "./fb.js?v=20261028a";
-import { COURSE_TITLE } from "./firebase-config.js?v=20261028a";
+} from "./fb.js?v=20261111a";
+import { COURSE_TITLE } from "./firebase-config.js?v=20261111a";
 import {
   esc, renderBlocks, readInput, fmtTime, friendlyError, authFormHTML, wireAuthForm, subId, exercisesOf, isAuto, isPractice,
   isTeacherChecked, wireFlashcards, countWords, DONE, doneMap, exerciseNumbers, planTag, unitNo, unitLabel, wireLang, gradeExercise,
-} from "./common.js?v=20261028a";
-import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261028a";
-import { feedbackHTML } from "./writing.js?v=20261028a";
-import "./speaking.js?v=20261028a";
+} from "./common.js?v=20261111a";
+import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261111a";
+import { feedbackHTML, pairFeedbackHTML } from "./writing.js?v=20261111a";
+import "./speaking.js?v=20261111a";
 
 const $ = (s) => document.querySelector(s);
 const S = {
@@ -264,7 +264,7 @@ function renderMain() {
   const relEx = S.group.releasedEx?.[unit.id] || [];
   const done = doneMap(sub.answers);
   const plan = S.group.plan?.[unit.id] || {};
-  const viewKey = `${unit.id}/${sec.id}/${readOnly}/${!!res}/${relEx.join(",")}/${(S.group.feedbackEx?.[unit.id] || []).join(",")}/${S.exrVer}/${JSON.stringify(done)}/${JSON.stringify(plan)}`;
+  const viewKey = `${unit.id}/${sec.id}/${readOnly}/${!!res}/${relEx.join(",")}/${(S.group.feedbackEx?.[unit.id] || []).join(",")}/${S.exrVer}/${JSON.stringify(done)}/${JSON.stringify(plan)}/${(S.group.roster || []).map((p) => p.uid).join(",")}`;
 
   // nothing on the page has changed (e.g. a draft came back from the database): only the bar is updated,
   // so the page does not jump and the cursor stays in place
@@ -288,11 +288,15 @@ function renderMain() {
       return {
         itemExtra: fb ? (itemId) => feedbackHTML(fb[itemId], { checkedAt: fmtTime(fbAt) }) : null,
         answers: sub.answers?.[ex.id] || {},
+        speech: sub.answers?._speech?.[ex.id],
+        // the classmates for the partner list of a pair discussion (names only, kept by the Teacher's Edition in the group)
+        roster: ex.pair ? (S.group.roster || []).filter((p) => p.uid !== S.user?.uid) : undefined,
         readOnly: readOnly || exDone || isDone,
         headExtra: planTag(plan[ex.id]),
         factor,
         cls: isDone || exDone ? "is-done" : "",
-        after: readOnly || exDone ? "" : doneFootHTML(ex, isDone, sub.answers?.[ex.id]),
+        // a pair discussion that the partner recorded: the teacher's check put a copy of the text and the feedback here
+        after: (ex.pair && fb?._pair ? pairFeedbackHTML(fb._pair, { checkedAt: fmtTime(fbAt) }) : "") + (readOnly || exDone ? "" : doneFootHTML(ex, isDone, sub.answers?.[ex.id])),
         auto: isPractice(ex) ? selfRes : res ? (isAuto(ex) ? res.auto?.[ex.id] || {} : null) : exDone ? S.exr[unit.id]?.items?.[ex.id] || {} : selfRes,
         manual: res?.manual?.[ex.id],
         showPending: !!res && !isPractice(ex),

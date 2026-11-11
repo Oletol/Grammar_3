@@ -222,7 +222,7 @@ assert.ok(rb, "the unit result keeps the 25% rule");
 console.log("   Boris, whole unit:", rb.score, "/", rb.max);
 assert.ok(!("p5" in rb.auto) && !("sfn" in rb.auto), "Supplementary Exercises are not in the score of the week");
 const suppItems = ["p5", "sfn"].reduce((n, id) => n + exById[id].items.length, 0);
-assert.ok(suppItems > 0 && rb.max === 219 - suppItems, "the maximum no longer includes Supplementary Exercises: " + rb.max);
+assert.ok(suppItems > 0 && rb.max === 221 - suppItems, "the maximum no longer includes Supplementary Exercises: " + rb.max);
 
 step("Supplementary Exercises: the student checks them at once (Check my answers / Try again); they are optional");
 await t.click('a[href="#tools/access"]');
