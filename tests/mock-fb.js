@@ -76,7 +76,7 @@ export const query = (c, ...cons) => ({ kind: "query", coll: c.coll, cons });
 
 const snapDoc = (path, data) => ({
   id: path.split("/")[1], exists: () => data !== undefined, data: () => (data === undefined ? undefined : revive(structuredClone(data))),
-  metadata: { hasPendingWrites: false },
+  metadata: { hasPendingWrites: false, fromCache: false },
 });
 function runQuery(q) {
   const all = load(LS_DB);
@@ -131,7 +131,8 @@ export function writeBatch() {
 }
 
 const listeners = new Set();
-export function onSnapshot(ref, next) {
+export function onSnapshot(ref, a, b) {
+  const next = typeof a === "function" ? a : b;   // onSnapshot(ref, options, next) as in Firestore
   const run = () => {
     if (ref.kind === "doc") next(snapDoc(ref.path, load(LS_DB)[ref.path]));
     else next(runQuery(ref.kind === "coll" ? { coll: ref.coll } : ref));

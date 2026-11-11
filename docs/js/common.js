@@ -1,6 +1,6 @@
 // Общие функции: отрисовка упражнений, автопроверка, подсчёт баллов.
 // Используются и студенческой, и преподавательской страницей.
-import { metricsLine } from "./transcribe.js?v=20261111a";
+import { metricsLine } from "./transcribe.js?v=20261111b";
 
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -141,8 +141,9 @@ export function gradeExercise(ex, answers, keys) {
 export const r2 = (x) => Math.round(x * 100) / 100;
 export function buildResult({ sub, content, keys, manual = {}, showCorrect = true, factors = {} }) {
   const auto = gradeAuto(content, sub.answers, keys);
-  if (!showCorrect)
-    for (const ex of Object.values(auto.items)) for (const r of Object.values(ex)) delete r.correct;
+  // the correct answers go to the students only when the teacher allows it, and never for translations and paraphrases
+  for (const ex of exercisesOf(content))
+    if (auto.items[ex.id]) auto.items[ex.id] = studentItems(ex, auto.items[ex.id], showCorrect);
   let aScore = 0;
   for (const [exId, items] of Object.entries(auto.items))
     aScore += Object.values(items).filter((r) => r.ok).length * (factors[exId] ?? 1);
@@ -176,6 +177,24 @@ export const doneMap = (answers) => (answers && typeof answers[DONE] === "object
 
 // translation exercises are left out of the live statistics
 export const isTranslation = (ex) => ex.stats === false || /translat/i.test(`${ex.title || ""} ${ex.rubric || ""}`.replace(/<[^>]*>/g, ""));
+
+// ------------------------------------------------------------------ which keys the students may see
+// Exercises where the student writes or rewrites a whole sentence (translations, paraphrases, transformations,
+// open answers) never send a model answer to the students: there are many good answers, and one model answer
+// would be taken as the only right one. Gap fills, multiple choice and matching may show the correct answer.
+// "showKey": true or false in course.json decides for one exercise.
+const REWRITE = /translat|paraphras|rephras|re-?writ|reword|transform|mean(s|ing)? the same|second sentence|in other words/i;
+export const isRewrite = (ex) => ex?.kind === "open" || isTranslation(ex || {}) || REWRITE.test(`${ex?.title || ""} ${ex?.rubric || ""}`.replace(/<[^>]*>/g, ""));
+export function keyForStudents(ex) {
+  if (ex?.showKey === true) return true;
+  if (ex?.showKey === false) return false;
+  return ["gap", "mcq", "match"].includes(ex?.kind) && !isRewrite(ex);
+}
+// remove the correct answers from a checked exercise ({itemId: {given, ok, correct}}) when the students may not see them
+export function studentItems(ex, items, showCorrect = true) {
+  if (!items || (showCorrect && keyForStudents(ex))) return items;
+  return Object.fromEntries(Object.entries(items).map(([id, r]) => { const { correct, ...rest } = r || {}; return [id, rest]; }));
+}
 
 // numbers of the exercises as the book shows them: {exId: "1.4.2"}
 export function exerciseNumbers(content, unitN) {

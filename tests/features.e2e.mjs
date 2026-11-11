@@ -16,7 +16,7 @@ const exById = Object.fromEntries(u1.sections.flatMap((s) => s.blocks.filter((b)
 const key = (ex, it) => { const a = exById[ex].items.find((x) => x.id === it).answer; return Array.isArray(a) ? a[0] : a; };
 
 const LAUNCH = { args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] };
-const browser = await chromium.launch({ ...LAUNCH, executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch(LAUNCH));
+const browser = await chromium.launch({ ...LAUNCH, executablePath: "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome" }).catch(() => chromium.launch(LAUNCH));
 const ctx = await browser.newContext({ viewport: { width: 1360, height: 950 }, permissions: ["microphone"] });
 await ctx.route("**/js/fb.js*", (r) => r.fulfill({ contentType: "text/javascript", body: mock }));
 const errors = [];
@@ -129,7 +129,7 @@ assert.ok((await s1.textContent("#ex-n3 .ex-plan")).includes("HA"));
 await s1.fill(sel("s6", "1"), key("s6", "1"));
 await s1.fill(sel("s6", "2"), "wrong answer");
 await s1.waitForTimeout(800);
-assert.equal(await t.locator('[data-is="s6|1"] .ib-ok').count(), 0, "answers are not sent before Done");
+await t.waitForSelector('[data-is="s6|1"] .ib-ok', { timeout: 8000 });   // answers are saved automatically, before Done
 await s1.click('[data-done="s6"]');
 await s1.waitForTimeout(1600);   // the mock keeps the whole database in one localStorage entry: two saves at the same moment can overwrite each other
 await s2.fill(sel("s6", "1"), key("s6", "1"));

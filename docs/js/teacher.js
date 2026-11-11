@@ -4,17 +4,17 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword, sendPasswordResetEmail, signOut,
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, orderBy,
   writeBatch, arrayUnion, arrayRemove, serverTimestamp, deleteField,
-} from "./fb.js?v=20261111a";
-import { COURSE_TITLE } from "./firebase-config.js?v=20261111a";
+} from "./fb.js?v=20261111b";
+import { COURSE_TITLE } from "./firebase-config.js?v=20261111b";
 import {
   esc, renderBlocks, renderExercise, exercisesOf, isAuto, isPractice, gradeAuto, buildResult, keyText, norm,
   fmtTime, friendlyError, authFormHTML, wireAuthForm, subId, KIND_LABEL, isTeacherChecked, gradeExercise, wireFlashcards, isManual,
-  isCorrect, readInput, doneMap, isTranslation, exerciseNumbers, fmtDate, todayISO, answerLabel, r2, unitNo, unitLabel, wireLang,
-} from "./common.js?v=20261111a";
-import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261111a";
-import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, pairFeedbackHTML, sleep } from "./writing.js?v=20261111a";
-import "./speaking.js?v=20261111a";
-import { isWritingTask, measure, METRICS, toCSV } from "./progress.js?v=20261111a";
+  isCorrect, readInput, doneMap, isTranslation, exerciseNumbers, studentItems, keyForStudents, fmtDate, todayISO, answerLabel, r2, unitNo, unitLabel, wireLang,
+} from "./common.js?v=20261111b";
+import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261111b";
+import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, pairFeedbackHTML, sleep } from "./writing.js?v=20261111b";
+import "./speaking.js?v=20261111b";
+import { isWritingTask, measure, METRICS, toCSV } from "./progress.js?v=20261111b";
 
 const $ = (s) => document.querySelector(s);
 const ls = {
@@ -268,9 +268,9 @@ function viewUnit(r) {
   const vexr = T.viewAs ? T.exr?.[T.viewAs] : null;
   const vres = T.viewAs ? T.results[T.viewAs] : null;
   const tip = T.viewAs
-    ? `<p class="muted tip">You see the answers of <b>${esc(T.students.find((s) => s.uid === T.viewAs)?.name || "")}</b>${vs ? ` (${vs.status === "submitted" ? "submitted" : "sent with Done"}, last change ${esc(fmtTime(vs.updatedAt))})` : ""}: green – correct, red – a mistake with the key next to it. Only exercises the student has sent with <b>Done</b> are here; the page follows the student's changes live. Marks for open answers are given in <a href="#tools/works" data-act="select-student" data-uid="${esc(T.viewAs)}">Student work</a>.</p>`
+    ? `<p class="muted tip">You see the answers of <b>${esc(T.students.find((s) => s.uid === T.viewAs)?.name || "")}</b>${vs ? ` (${vs.status === "submitted" ? "submitted" : "draft"}, last change ${esc(fmtTime(vs.updatedAt))})` : ""}: green – correct, red – a mistake with the key next to it. Answers are saved automatically while the student types; “Done ✓” above an exercise means the student has finished it. The page follows the student's changes live. Marks for open answers are given in <a href="#tools/works" data-act="select-student" data-uid="${esc(T.viewAs)}">Student work</a>.</p>`
     : `<p class="muted tip">You can type and choose answers here, as the students do: nothing is saved or sent to the students.
-       Under each exercise title you can mark it <b>In-Class</b> or <b>HA</b> and tick <b>Done</b>. The figures on the right update live while the students work (exercises sent with Done).
+       Under each exercise title you can mark it <b>In-Class</b> or <b>HA</b> and tick <b>Done</b>. The figures on the right update live while the students work (answers are saved automatically a few seconds after typing).
        ${Object.keys(mine).length ? `<button class="btn small" data-act="practice-clear" data-unit="${esc(u.id)}">Clear my answers</button>` : ""}</p>`;
   return bar + docxBar(u) + viewAsBar() + pageHead(`${esc(uLabel(u))} &middot; ${n}.${i + 1}`, esc(sec.title), esc(meta.subtitle || sec.subtitle || ""))
     + tip
@@ -349,7 +349,7 @@ async function downloadDocx(unitId, ver, btn) {
   try {
     const d = await loadUnitData(unitId);
     if (!d?.content) throw new Error("This unit has no content yet.");
-    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261111a");
+    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261111b");
     const teacher = ver === "teacher";
     const sections = d.content.sections.map((s) => ({ ...s, subtitle: (u.sections || []).find((m) => m.id === s.id)?.subtitle || s.subtitle || "" }));
     const blob = await exportUnitDocx({ courseTitle: COURSE_TITLE, unitNum: unitNum(u), unitLabel: uLabel(u), unitTitle: u.title, sections,
@@ -363,7 +363,7 @@ async function downloadDocx(unitId, ver, btn) {
 // Exercises marked "check": "teacher" are checked one at a time, when the teacher decides
 function exerciseBar(u, ex, g) {
   const done = (g.releasedEx?.[u.id] || []).includes(ex.id);
-  return `<div class="tb-row"><span>Group <b>${esc(g.name)}</b>: <span class="pill ${done ? "on" : "off"}">${done ? "checked · results shown" : "not checked yet"}</span></span>
+  return `<div class="tb-row"><span>Group <b>${esc(g.name)}</b>: <span class="pill ${done ? "on" : "off"}">${done ? "checked · results shown" : "not checked yet"}</span>${keyForStudents(ex) ? "" : ` <span class="pill off" title="Students see which answers are right or wrong, but not the key">no model answer for students</span>`}</span>
     <span class="sp" style="flex:1"></span>
     ${done
       ? `<button class="btn small" data-act="check-ex" data-unit="${esc(u.id)}" data-ex="${esc(ex.id)}" title="Check again, e.g. for students who answered later">Re-check</button>
@@ -595,7 +595,8 @@ async function checkExercise(gid, unitId, exId) {
     let batch = writeBatch(db), n = 0;
     for (const s of subs) {
       const r = gradeExercise(ex, s.answers?.[exId], keys[exId]);
-      if (!T.showCorrect) for (const it of Object.values(r.items)) delete it.correct;
+      // correct answers only for gap fills, multiple choice and matching (never for translations and paraphrases)
+      r.items = studentItems(ex, r.items, T.showCorrect);
       const f = factorsFor(s.uid, unitId)[exId] ?? 1;      // absent from the lesson: 25% of the points
       batch.set(doc(db, "exerciseResults", subId(unitId, s.uid)), {
         uid: s.uid, groupId: gid, unitId,
@@ -1075,7 +1076,8 @@ function viewAccess() {
   return head + `
   <div class="box"><b>Group: ${esc(g.name)}</b> <span class="muted">(code <code>${esc(g.id)}</code>)</span><br>
   <span class="muted">To check <b>one exercise</b>, open the unit and click <b>Check this exercise now</b> above that exercise. “Check the whole unit” is for the end of a unit: it marks <b>all exercises</b> of all <b>submitted</b> work against the keys and shows the results; after that students can no longer change any answers in the unit.</span>
-  <label class="row" style="margin-top:10px"><input type="checkbox" id="show-correct" ${T.showCorrect ? "checked" : ""}> Show students the correct answers to their mistakes</label></div>
+  <label class="row" style="margin-top:10px"><input type="checkbox" id="show-correct" ${T.showCorrect ? "checked" : ""}> Show students the correct answers to their mistakes</label>
+  <p class="muted" style="margin:4px 0 0;font-size:13px">Correct answers are shown only in gap fills, multiple choice and matching. Translations, paraphrases and other sentence rewriting never get a model answer: students see only what is right and what is wrong.</p></div>
   <table class="t"><tr><th>#</th><th>Unit</th><th>Access for the group</th><th>Results</th></tr>${rows}</table>`;
 }
 
@@ -1141,7 +1143,9 @@ document.addEventListener("click", (e) => {
     "prog-student": () => { T.progOpt.student = b.dataset.uid || ""; T.progOpt.open = null; render(true); },
     "view-as": () => setViewAs(b.dataset.uid),
     // Analytics: open the week with this student's answers
-    "view-unit-as": () => { T.viewAs = b.dataset.uid; location.hash = `#${T.unitId}`; },
+    "view-unit-as": () => { T.viewAs = b.dataset.uid; location.hash = `#${b.dataset.unit || T.unitId}`; },
+    "stats-mode": () => { T.statsAll = b.dataset.mode === "all"; render(true); },
+    "stats-reload": () => { T.allData = null; render(true); },
     "lesson-add": () => addLesson(),
     "lesson-del": () => deleteLesson(b.dataset.date),
     "att": () => toggleAbsent(b.dataset.date, b.dataset.uid),
@@ -1333,19 +1337,25 @@ async function saveGrades(uid) {
 // The tick "only units submitted as a whole" gives the old, stricter view.
 function viewStats() {
   const g = group(), u = unit();
+  const all = T.statsAll;
+  const tabs = `<div class="row" style="margin:0 0 10px"><span class="seg" role="group" aria-label="Analytics view">
+      <button type="button" class="${all ? "" : "on"}" data-act="stats-mode" data-mode="week">This week</button><button type="button" class="${all ? "on" : ""}" data-act="stats-mode" data-mode="all">All weeks</button></span>
+      ${all ? "" : `<label class="row" style="margin:0"><input type="checkbox" id="stats-submitted" ${T.statsOnlySubmitted ? "checked" : ""}> only units submitted as a whole</label>`}</div>`;
+  if (all) return pageHead("Teaching tools", "Analytics", g ? `All weeks — group ${esc(g.name)}` : "") + tabs + (g ? viewStatsAll(g) : `<div class="box">Choose a group at the top of the page.</div>`);
   const head = pageHead("Teaching tools", "Analytics",
-    g && u ? `${esc(uLabel(u))} · ${esc(u.title)} — group ${esc(g.name)}` : "")
-    + `<label class="row"><input type="checkbox" id="stats-submitted" ${T.statsOnlySubmitted ? "checked" : ""}> only units submitted as a whole</label>`;
+    g && u ? `${esc(uLabel(u))} · ${esc(u.title)} — group ${esc(g.name)}` : "") + tabs;
   if (!g || !u) return head + `<div class="box">Choose a group and a unit at the top of the page.</div>`;
+  if (!T.studentsReady) return head + `<p class="muted">Loading the students…</p>`;
   const data = T.unitData[u.id];
-  if (!data?.content) return head + `<p class="muted">No data.</p>`;
+  if (!data) { loadUnitData(u.id).then(() => render(true)); return head + `<p class="muted">Loading…</p>`; }
+  if (!data.content) return head + `<div class="box">${esc(uLabel(u))} has no content yet.</div>`;
   const inGroup = new Set(T.students.map((s) => s.uid));
   const subs = T.subs.filter((s) => inGroup.has(s.uid) && (!T.statsOnlySubmitted || s.status === "submitted"));
   const nameOf = Object.fromEntries(T.students.map((s) => [s.uid, s.name]));
   const autoEx = exercisesOf(data.content).filter((ex) => isAuto(ex) && ex.items?.length);
   const nums = exerciseNumbers(data.content, unitNum(u));
   const started = (s, ex) => (ex.items || []).some((it) => String(s.answers?.[ex.id]?.[it.id] ?? "").trim());
-  if (!subs.length) return head + `<div class="box">${T.statsOnlySubmitted ? `No student has submitted ${esc(uLabel(u))} as a whole yet. Untick the box to see all answers.` : `No student has sent anything in ${esc(uLabel(u))} yet (answers come here when the student clicks Done).`}</div>`;
+  if (!subs.length) return head + `<div class="box">${T.statsOnlySubmitted ? `No student has submitted ${esc(uLabel(u))} as a whole yet. Untick the box to see all answers.` : `No student has answered anything in ${esc(uLabel(u))} yet.`}</div>`;
 
   // per student and exercise: only the exercises the student has started
   const perStudent = subs.map((s) => {
@@ -1398,7 +1408,7 @@ function viewStats() {
       <td class="wrong-list">${wrongHTML(x.wrong)}</td></tr>`;
 
   return head + `
-    <p class="muted">All exercises a student has sent with <b>Done</b> count, also when the week is not submitted as a whole: a student is counted in an exercise as soon as they have answered at least one of its questions. Supplementary Exercises (self-check, not marked) are included, so you can see where the students need practice. Open answers (translations, sentences, letters) are not checked against keys and are not in these figures.</p>
+    <p class="muted">All saved answers count (they are saved automatically while the students type), also when the week is not submitted as a whole: a student is counted in an exercise as soon as they have answered at least one of its questions. Supplementary Exercises (self-check, not marked) are included, so you can see where the students need practice. Open answers (translations, sentences, letters) are not checked against keys and are not in these figures.</p>
     <div class="cards">
       <div class="card"><b>${active.length} / ${T.students.length}</b><span>students with answers to check</span></div>
       <div class="card"><b>${avg}%</b><span>average score in the exercises they did</span></div>
@@ -1416,10 +1426,65 @@ function viewStats() {
       <td class="num"><b>${p.score}/${p.max}</b> (${p.pct}%)</td>
       ${exUsed.map((ex) => { const c = p.byEx[ex.id]; return `<td class="heat num" style="background:${heat(c?.pct, true)}">${c ? c.pct + "%" : "—"}</td>`; }).join("")}
       <td><button class="btn small" data-act="view-unit-as" data-uid="${esc(p.s.uid)}" title="Open the unit with this student's answers">Answers</button></td></tr>`).join("")}
+    ${T.students.filter((st) => !active.some((p) => p.s.uid === st.uid)).map((st) => `<tr class="muted"><td>${esc(st.name)}</td><td class="num">—</td>${exUsed.map(() => `<td class="num">—</td>`).join("")}<td><span class="muted" style="font-size:12px">${subs.some((x) => x.uid === st.uid) ? "only open answers" : "nothing answered yet"}</span></td></tr>`).join("")}
     </table></div>
 
     <details><summary>All questions in order (${items.length})</summary>
     <table class="t"><tr><th>Exercise</th><th>Question</th><th>Key</th><th>Correct</th><th>Wrong answers</th></tr>${items.map(itemRow).join("")}</table></details>`;
+}
+// ------------------------------------------------------------------ Analytics: all weeks
+// One table for the group: every student, every open week. A cell shows the share of correct answers in the
+// auto-checked exercises the student has done (Supplementary Exercises not counted) and how many required exercises are Done.
+async function loadAllStats(gid) {
+  T.allData = { gid, loading: true };
+  try {
+    const units = T.units.filter((x) => x.status !== "soon" && group()?.openUnits.includes(x.id));
+    await Promise.all(units.map((x) => loadUnitData(x.id)));
+    const [subs, exrs, ress] = await Promise.all(["submissions", "exerciseResults", "results"].map((c) => getDocs(query(collection(db, c), where("groupId", "==", gid)))));
+    if (T.allData?.gid !== gid) return;
+    const key = (d) => subId(d.unitId, d.uid);
+    T.allData = { gid, at: new Date(), units,
+      subs: Object.fromEntries(subs.docs.map((d) => [key(d.data()), d.data()])),
+      exr: Object.fromEntries(exrs.docs.map((d) => [key(d.data()), d.data()])),
+      res: Object.fromEntries(ress.docs.map((d) => [key(d.data()), d.data()])) };
+  } catch (e) { console.warn(e); if (T.allData?.gid === gid) T.allData = { gid, error: friendlyError(e) }; }
+  if (route().tool === "stats" && T.statsAll) render(true);
+}
+function viewStatsAll(g) {
+  const A = T.allData;
+  if (!A || A.gid !== g.id) { loadAllStats(g.id); return `<p class="muted">Loading the work of group ${esc(g.name)}…</p>`; }
+  if (A.loading) return `<p class="muted">Loading the work of group ${esc(g.name)}…</p>`;
+  if (A.error) return `<div class="box">The data could not be loaded: ${esc(A.error)} <button class="btn small" data-act="stats-reload">Try again</button></div>`;
+  if (!A.units.length) return `<div class="box">No week is open for this group yet.</div>`;
+  const cell = (st, x) => {
+    const d = T.unitData[x.id];
+    const s = A.subs[subId(x.id, st.uid)];
+    if (!d?.content || !s) return { html: `<td class="num muted">—</td>` };
+    const exs = exercisesOf(d.content).filter((ex) => !isPractice(ex));
+    const done = exs.filter((ex) => doneMap(s.answers)[ex.id] || (g.releasedEx?.[x.id] || []).includes(ex.id)).length;
+    let ok = 0, n = 0;
+    for (const ex of exs) {
+      if (!isAuto(ex) || !(ex.items || []).some((it) => String(s.answers?.[ex.id]?.[it.id] ?? "").trim())) continue;
+      const r = gradeExercise(ex, s.answers?.[ex.id] || {}, d.keys?.[ex.id] || {});
+      ok += r.score; n += r.max;
+    }
+    const p = n ? Math.round((100 * ok) / n) : null;
+    const res = A.res[subId(x.id, st.uid)];
+    const tip = `${uLabel(x)}: ${p === null ? "no auto-checked answers" : `${ok} of ${n} correct`} · Done ${done} of ${exs.length}${res ? ` · week result ${res.score} / ${res.max}` : ""}${s.status === "submitted" ? " · submitted" : ""}`;
+    return { p, ok, n, html: `<td class="heat num" style="background:${heat(p, true)}" title="${esc(tip)}"><a href="#" data-act="view-unit-as" data-uid="${esc(st.uid)}" data-unit="${esc(x.id)}">${p === null ? "–" : p + "%"}</a><br><small class="muted">${done}/${exs.length} done${res ? ` · ${res.score}/${res.max}` : ""}</small></td>` };
+  };
+  const rows = T.students.map((st) => {
+    const cs = A.units.map((x) => cell(st, x));
+    const ok = cs.reduce((a, c) => a + (c.ok || 0), 0), n = cs.reduce((a, c) => a + (c.n || 0), 0);
+    const p = n ? Math.round((100 * ok) / n) : null;
+    return { st, p, html: `<tr><td><b>${esc(st.name)}</b></td><td class="num"><b>${p === null ? "—" : p + "%"}</b>${n ? `<br><small class="muted">${ok}/${n}</small>` : ""}</td>${cs.map((c) => c.html).join("")}</tr>` };
+  });
+  const colMean = A.units.map((x) => { const v = T.students.map((st) => cell(st, x).p).filter((y) => y !== null && y !== undefined); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null; });
+  return `<p class="muted">Every student of the group in every open week: the share of correct answers in the auto-checked exercises the student has answered (Supplementary Exercises are not counted), and how many required exercises are Done. Click a figure to open the week with this student's answers.
+      <span class="muted">Updated ${esc(fmtTime(A.at))}</span> <button class="btn small" data-act="stats-reload">Refresh</button></p>
+    <div class="tscroll"><table class="t stats-t"><tr><th>Student</th><th>All weeks</th>${A.units.map((x) => `<th title="${esc(x.title)}">${esc(uLabel(x))}</th>`).join("")}</tr>
+      <tr class="muted"><td><i>Group mean</i></td><td></td>${colMean.map((v) => `<td class="heat num" style="background:${heat(v, true)}"><b>${v === null ? "—" : v + "%"}</b></td>`).join("")}</tr>
+      ${rows.map((r) => r.html).join("") || `<tr><td colspan="${A.units.length + 2}" class="muted">There are no students in this group yet.</td></tr>`}</table></div>`;
 }
 function heat(p, light) {
   if (p === null || p === undefined) return "transparent";
@@ -1764,7 +1829,7 @@ async function releaseTest(key) {
       for (const ex of c.exercises || []) {
         if (!isAuto(ex)) continue;
         const gr = gradeExercise(ex, a.answers?.[ex.id], t.keys[ex.id]);
-        if (!T.showCorrect) for (const it of Object.values(gr.items)) delete it.correct;
+        gr.items = studentItems(ex, gr.items, T.showCorrect);
         items[ex.id] = gr.items; score += gr.score; max += gr.max;
       }
       batch.set(doc(db, "testResults", `${key}__${a.uid}`), { uid: a.uid, groupId: T.gid, testKey: key, items, score, max, gradedAt: serverTimestamp() });
