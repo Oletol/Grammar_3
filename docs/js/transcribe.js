@@ -6,7 +6,7 @@ const waiting = new Map();
 
 function getWorker() {
   if (worker) return worker;
-  worker = new Worker(new URL("./asr-worker.js?v=20261111b", import.meta.url), { type: "module" });
+  worker = new Worker(new URL("./asr-worker.js?v=20261111c", import.meta.url), { type: "module" });
   worker.onmessage = (e) => {
     const m = e.data;
     for (const w of waiting.values()) if (m.type === "progress") w.onProgress?.(m);
@@ -102,6 +102,13 @@ export function chunks(a, st) {
   });
 }
 
+// The text before the recording that Whisper sees ("prompt"): a sample of a learner's speech with hesitations.
+// Whisper copies its style, so it writes "er", "um" where the student hesitates (instead of inventing words such as
+// "her") and changes the student's grammar less: the transcript stays closer to what was really said.
+// (Checked on test recordings: "Er, I think, er, swimming…" instead of "I think her swimming…".)
+const PROMPT = "Um, well, er, I think that, uh, he don't like go there. Er, you know, I, I mean, I enjoy to read, hmm.";
+export const FILLERS = /\b(?:u+m+|u+h+|e+r+m*|h+m+|a+h+|e+h+|mm+)\b/gi;
+
 export async function transcribeBlob(blob, onProgress) {
   onProgress?.({ stage: "prepare" });
   const a = await decodeTo16k(blob);
@@ -112,14 +119,16 @@ export async function transcribeBlob(blob, onProgress) {
     const id = ++seq;
     text = await new Promise((resolve, reject) => {
       waiting.set(id, { resolve, reject, onProgress });
-      getWorker().postMessage({ id, chunks: parts }, parts.map((p) => p.buffer));
+      getWorker().postMessage({ id, chunks: parts, prompt: PROMPT }, parts.map((p) => p.buffer));
     });
   }
-  const words = (text.match(/[A-Za-z]+(?:['’][A-Za-z]+)?/g) || []).length;
+  // hesitations (um, er) are not words: they are counted on their own
+  const fillers = (text.match(FILLERS) || []).length;
+  const words = (text.replace(FILLERS, " ").match(/[A-Za-z]+(?:['’][A-Za-z]+)?/g) || []).length;
   const metrics = {
     total: st.total, speech: st.speech, words,
     wpm: st.span > 3 ? Math.round(words / (st.span / 60)) : 0,
-    pauses: st.pauses, longest: st.longest,
+    pauses: st.pauses, longest: st.longest, fillers,
     at: Date.now(),                 // when the text was made: the Speaking progress page puts the recordings in order
   };
   return { text, metrics };
@@ -130,5 +139,6 @@ export function metricsLine(m) {
   const t = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
   return `Recording ${t(m.total)} · you spoke for about ${t(m.speech)} · ${m.words} words`
     + (m.wpm ? ` · about ${m.wpm} words per minute` : "")
-    + ` · ${m.pauses} ${m.pauses === 1 ? "pause" : "pauses"} longer than 1 second${m.pauses ? ` (longest ${m.longest} s)` : ""}`;
+    + ` · ${m.pauses} ${m.pauses === 1 ? "pause" : "pauses"} longer than 1 second${m.pauses ? ` (longest ${m.longest} s)` : ""}`
+    + (m.fillers ? ` · ${m.fillers} ${m.fillers === 1 ? "hesitation" : "hesitations"} (um, er)` : "");
 }

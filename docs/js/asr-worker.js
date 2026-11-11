@@ -106,8 +106,29 @@ function logMel(audio) {
   return mel;
 }
 
+// ------------------------------------------------------------------ text into tokens (byte-level BPE, as in GPT-2 / tiktoken)
+// Used for the prompt: a short sample of how learners speak ("Um, er, I, I think…"). Whisper copies the style of the
+// text before it, so with this prompt it keeps hesitations and does not tidy up the student's grammar so much.
+const PRE = /'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+/gu;
+let RANK = null;
+function encode(text) {
+  if (!RANK) { RANK = new Map(); M.vocab.forEach((u, id) => { if (u) RANK.set(String.fromCharCode(...u), id); }); }
+  const out = [], te = new TextEncoder();
+  for (const piece of String(text || "").match(PRE) || []) {
+    const parts = Array.from(te.encode(piece), (b) => String.fromCharCode(b));
+    for (;;) {
+      let best = -1, br = Infinity;
+      for (let i = 0; i < parts.length - 1; i++) { const r = RANK.get(parts[i] + parts[i + 1]); if (r !== undefined && r < br) { br = r; best = i; } }
+      if (best < 0) break;
+      parts.splice(best, 2, parts[best] + parts[best + 1]);
+    }
+    for (const p of parts) { const id = RANK.get(p); if (id !== undefined) out.push(id); }
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ greedy decoding
-async function transcribeChunk(audio) {
+async function transcribeChunk(audio, prompt = []) {
   const { cfg, enc, dec, vocab } = M;
   const { k: ck, v: cv } = await (async () => {
     const out = await enc.run({ mel: new ort.Tensor("float32", logMel(audio), [1, N_MELS, N_FRAMES]) });
@@ -116,7 +137,10 @@ async function transcribeChunk(audio) {
   const shape = [cfg.n_layer, 1, cfg.n_ctx, cfg.n_state];
   let kc = new ort.Tensor("float32", new Float32Array(shape.reduce((a, b) => a * b)), shape);
   let vc = new ort.Tensor("float32", new Float32Array(shape.reduce((a, b) => a * b)), shape);
-  let cur = [cfg.sot, cfg.no_timestamps], offset = 0;
+  // <|startofprev|> prompt <|startoftranscript|> <|notimestamps|>
+  const pre = prompt.length ? [cfg.startofprev ?? 50360, ...prompt.slice(-(cfg.n_ctx / 2 - 1))] : [];
+  let cur = [...pre, cfg.sot, cfg.no_timestamps], offset = 0;
+  const sotAt = pre.length;
   const out = [], banned = new Set(cfg.non_speech);
   let noSpeech = 0, sumLp = 0;
   for (let step = 0; step < 224; step++) {
@@ -130,9 +154,10 @@ async function transcribeChunk(audio) {
     const V = r.logits.dims[2], L = r.logits.data, last = (cur.length - 1) * V;
     if (step === 0) {                      // probability of "no speech" right after the start token
       let m = -Infinity, s = 0;
-      for (let i = 0; i < V; i++) m = Math.max(m, L[i]);
-      for (let i = 0; i < V; i++) s += Math.exp(L[i] - m);
-      noSpeech = Math.exp(L[cfg.no_speech] - m) / s;
+      const o = sotAt * V;                 // the logits at the position of <|startoftranscript|>
+      for (let i = 0; i < V; i++) m = Math.max(m, L[o + i]);
+      for (let i = 0; i < V; i++) s += Math.exp(L[o + i] - m);
+      noSpeech = Math.exp(L[o + cfg.no_speech] - m) / s;
     }
     let best = -1, bv = -Infinity, m = -Infinity, s = 0;
     for (let i = 0; i < V; i++) {
@@ -156,13 +181,14 @@ async function transcribeChunk(audio) {
 }
 
 self.onmessage = async (e) => {
-  const { id, chunks } = e.data;
+  const { id, chunks, prompt } = e.data;
   try {
     await load();
+    const promptIds = prompt ? encode(prompt) : [];
     const texts = [];
     for (let i = 0; i < chunks.length; i++) {
       post({ type: "progress", stage: "run", part: i + 1, parts: chunks.length });
-      const r = await transcribeChunk(chunks[i]);
+      const r = await transcribeChunk(chunks[i], promptIds);
       // silence: Whisper may invent a sentence ("Thank you.") when nobody speaks
       if (r.noSpeech > 0.6 && r.avgLogProb < -0.7) continue;
       if (r.text) texts.push(r.text);

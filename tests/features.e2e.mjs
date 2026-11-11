@@ -16,7 +16,7 @@ const exById = Object.fromEntries(u1.sections.flatMap((s) => s.blocks.filter((b)
 const key = (ex, it) => { const a = exById[ex].items.find((x) => x.id === it).answer; return Array.isArray(a) ? a[0] : a; };
 
 const LAUNCH = { args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] };
-const browser = await chromium.launch({ ...LAUNCH, executablePath: "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome" }).catch(() => chromium.launch(LAUNCH));
+const browser = await chromium.launch({ ...LAUNCH, executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch(LAUNCH));
 const ctx = await browser.newContext({ viewport: { width: 1360, height: 950 }, permissions: ["microphone"] });
 await ctx.route("**/js/fb.js*", (r) => r.fulfill({ contentType: "text/javascript", body: mock }));
 const errors = [];

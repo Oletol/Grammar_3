@@ -694,3 +694,14 @@ textarea.open-answer.transcript{background:#fbfaf6;cursor:default}
 .upd-bar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:60;display:flex;gap:12px;align-items:center;
   background:var(--navy);color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-size:14px}
 .seg button.on[data-act=stats-mode]{background:var(--navy);color:#fff}
+/* grammar of the module in the feedback */
+.wfb-comment{margin:8px 0;padding:8px 12px;border-left:3px solid var(--plum);background:#faf6f9;font-style:italic}
+.wfb-g{margin:10px 0 6px;padding:8px 12px;border:1px dashed var(--line);border-radius:8px}
+.wfb-gh{font-weight:700;font-size:14px;margin-bottom:4px}
+.wfb-gl{margin:4px 0 4px 18px;padding:0;font-size:14px}
+.wfb-gl li{margin:2px 0}
+.tg-ok{color:var(--ok)}
+.tg-bad{color:var(--bad)}
+.ai-box textarea{width:100%;min-height:120px;font:inherit}
+.ai-box .row label{display:flex;flex-direction:column;gap:3px;font-size:13px}
+.ai-box input,.ai-box select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px}

@@ -32,7 +32,7 @@ await t.fill("#auth-form [name=email]", "teacher@uni.ru"); await t.fill("#auth-f
 await t.waitForSelector("#tool-nav .sb-item");
 await t.click('a[href="#tools/content"]');
 await t.evaluate((c) => { document.querySelector("#import-text").value = c; }, courseText);
-await t.click("[data-act=import]"); await t.waitForSelector("text=Imported");
+await t.click("[data-act=import]"); await t.waitForSelector("#import-status:has-text(\"✓ Imported\")");
 await t.click('a[href="#tools/groups"]'); await t.waitForSelector("#g-name");
 await t.fill("#g-name", "PA-21"); await t.fill("#g-code", "PA-21"); await t.click("[data-act=create-group]");
 await t.waitForSelector("td:has-text('PA-21')");

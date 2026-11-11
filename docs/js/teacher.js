@@ -4,17 +4,20 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword, sendPasswordResetEmail, signOut,
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, orderBy,
   writeBatch, arrayUnion, arrayRemove, serverTimestamp, deleteField,
-} from "./fb.js?v=20261111b";
-import { COURSE_TITLE } from "./firebase-config.js?v=20261111b";
+} from "./fb.js?v=20261111c";
+import { COURSE_TITLE } from "./firebase-config.js?v=20261111c";
 import {
   esc, renderBlocks, renderExercise, exercisesOf, isAuto, isPractice, gradeAuto, buildResult, keyText, norm,
   fmtTime, friendlyError, authFormHTML, wireAuthForm, subId, KIND_LABEL, isTeacherChecked, gradeExercise, wireFlashcards, isManual,
   isCorrect, readInput, doneMap, isTranslation, exerciseNumbers, studentItems, keyForStudents, fmtDate, todayISO, answerLabel, r2, unitNo, unitLabel, wireLang,
-} from "./common.js?v=20261111b";
-import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261111b";
-import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, pairFeedbackHTML, sleep } from "./writing.js?v=20261111b";
-import "./speaking.js?v=20261111b";
-import { isWritingTask, measure, METRICS, toCSV } from "./progress.js?v=20261111b";
+} from "./common.js?v=20261111c";
+import { initShell, renderUnitNav, wireUnitNav } from "./shell.js?v=20261111c";
+import { loadVocab, grammarCheck, vocabProfile, unitVocabulary, feedbackHTML, pairFeedbackHTML, sleep } from "./writing.js?v=20261111c";
+import "./speaking.js?v=20261111c";
+import { isWritingTask, measure, METRICS, toCSV } from "./progress.js?v=20261111c";
+import { analyse, grammarOf, STRUCT, STRUCTURES } from "./grammar.js?v=20261111c";
+import { aiCheck, aiReady, aiSettings, saveAiSettings, endpoint, PROVIDERS, listModels, testAi } from "./ai-check.js?v=20261111c";
+import { FILLERS } from "./transcribe.js?v=20261111c";
 
 const $ = (s) => document.querySelector(s);
 const ls = {
@@ -49,6 +52,7 @@ const TOOLS = [
   { id: "works", icon: "📝", title: "Student work", sub: "Answers, open-answer marking" },
   { id: "tests", icon: "⏱", title: "Tests", sub: "Timed tests: open, watch, check" },
   { id: "stats", icon: "📊", title: "Analytics", sub: "Difficult questions, heat map" },
+  { id: "checker", icon: "🔎", title: "Grammar checker", sub: "LanguageTool or AI, grammar of the module" },
   { id: "speaking", icon: "🎙", title: "Speaking progress", sub: "Recordings as text: figures, trends, texts" },
   { id: "writing", icon: "✍", title: "Writing progress", sub: "Translations and texts: figures, trends, texts" },
   { id: "journal", icon: "📅", title: "Attendance", sub: "Lesson dates, present and absent" },
@@ -233,7 +237,7 @@ function render(force = false) {
   if (r.unit) { $("#view").innerHTML = viewUnit(r); T.unitViewKey = unitViewKey(r); return; }
   const tool = TOOLS.find((t) => t.id === r.tool);
   $("#crumb").innerHTML = `<b>Teaching tools</b> &middot; ${tool.title}`;
-  const views = { access: viewAccess, works: viewWorks, tests: viewTests, stats: viewStats, content: viewContent, groups: viewGroups, journal: viewJournal, speaking: () => viewProgress("speaking"), writing: () => viewProgress("writing") };
+  const views = { access: viewAccess, works: viewWorks, tests: viewTests, stats: viewStats, content: viewContent, groups: viewGroups, journal: viewJournal, checker: viewChecker, speaking: () => viewProgress("speaking"), writing: () => viewProgress("writing") };
   $("#view").innerHTML = views[r.tool]();
 }
 
@@ -289,8 +293,8 @@ function viewUnit(r) {
           manual: vres?.manual?.[ex.id],
           tag: done ? (isPractice(ex) ? "Checked by the student ✓" : "Done ✓") : vs && Object.values(ans).some((v) => String(v).trim()) ? "Started, not marked Done" : "",
           before: g ? toolsBar(u, ex, g, st) : "",
-          itemExtra: fbx ? (itemId) => feedbackHTML(fbx[itemId], { checkedAt: fmtTime(vexr.feedbackAt?.[ex.id]) }) : null,
-          after: (ex.pair && fbx?._pair ? pairFeedbackHTML(fbx._pair, { checkedAt: fmtTime(vexr.feedbackAt?.[ex.id]) }) : "") + (st.items ? `<div class="mist" data-mi="${esc(ex.id)}" ${T.mistOpen.has(ex.id) ? "" : "hidden"}>${mistakesHTML(ex, st)}</div>` : ""),
+          itemExtra: fbx ? (itemId) => feedbackHTML(fbx[itemId], { checkedAt: fmtTime(vexr.feedbackAt?.[ex.id]), teacher: true }) : null,
+          after: (ex.pair && fbx?._pair ? pairFeedbackHTML(fbx._pair, { checkedAt: fmtTime(vexr.feedbackAt?.[ex.id]), teacher: true }) : "") + (st.items ? `<div class="mist" data-mi="${esc(ex.id)}" ${T.mistOpen.has(ex.id) ? "" : "hidden"}>${mistakesHTML(ex, st)}</div>` : ""),
         };
       }
       return {
@@ -349,7 +353,7 @@ async function downloadDocx(unitId, ver, btn) {
   try {
     const d = await loadUnitData(unitId);
     if (!d?.content) throw new Error("This unit has no content yet.");
-    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261111b");
+    const { exportUnitDocx, saveBlob } = await import("./export-docx.js?v=20261111c");
     const teacher = ver === "teacher";
     const sections = d.content.sections.map((s) => ({ ...s, subtitle: (u.sections || []).find((m) => m.id === s.id)?.subtitle || s.subtitle || "" }));
     const blob = await exportUnitDocx({ courseTitle: COURSE_TITLE, unitNum: unitNum(u), unitLabel: uLabel(u), unitTitle: u.title, sections,
@@ -628,8 +632,15 @@ async function checkWriting(gid, unitId, exId) {
     const ex = exercisesOf(content).find((e) => e.id === exId);
     const subs = (await getDocs(query(collection(db, "submissions"), where("groupId", "==", gid), where("unitId", "==", unitId)))).docs.map((d) => d.data())
       .filter((s) => Object.values(s.answers?.[exId] || {}).some((v) => String(v).trim()));
-    if (!confirm(`Check the writing in “${ex.title}”?\nStudents with answers: ${subs.length}.\nThe texts are sent to LanguageTool for the grammar check (about 3 seconds per student). Students will see the feedback and can correct their texts.`)) return;
+    const ai = aiReady(), eng = endpoint();
+    const gids = grammarOf(ex, T.units.find((x) => x.id === unitId));
+    if (!confirm(`Check the ${ex.transcript ? "speaking" : "writing"} in “${ex.title}”?\nStudents with answers: ${subs.length}.\n`
+      + (ai ? `The texts are checked by AI (${eng.name}, ${eng.model}), about ${Math.round(eng.delay / 1000) + 2} seconds per student.`
+            : `The texts are sent to LanguageTool for the grammar check (about 3 seconds per student).`)
+      + `\n${gids.length ? `Grammar of the module: ${gids.map((id) => STRUCT[id].label).join(", ")}.` : "No grammar of the module is set for this week (\"grammar\" in course.json)."}`
+      + `\nStudents will see the feedback and can correct their texts.`)) return;
     const V = await loadVocab();
+    let aiFailed = 0;
     // the task's own phrases (the "vocab" list of the exercise), otherwise the vocabulary of the week
     const phrases = Array.isArray(ex.vocab) && ex.vocab.length ? ex.vocab : unitVocabulary(content);
     let n = 0, ltFailed = 0, copied = 0, unmatched = 0;
@@ -639,14 +650,14 @@ async function checkWriting(gid, unitId, exId) {
       if (prog) prog.textContent = `Checking ${n} of ${subs.length}…`;
       const plainIds = new Set((ex.items || []).filter((it) => it.plain).map((it) => it.id));
       const texts = Object.fromEntries(Object.entries(s.answers[exId] || {}).filter(([id]) => !plainIds.has(id)));
-      let issues = {}, grammarError = false;
-      try { issues = await grammarCheck(texts); } catch (e) { console.warn(e); grammarError = true; ltFailed++; }
+      const res = await checkTexts(texts, { ex, unitId, V, phrases });
+      if (res.aiFailed) aiFailed++;
+      if (res.ltFailed) ltFailed++;
       const fb = {};
       for (const it of ex.items || []) {
         if (it.plain) continue;                     // a partner's name: nothing to check
-        const text = String(texts[it.id] || "");
-        if (!text.trim()) continue;
-        fb[it.id] = { text, issues: issues[it.id] || [], grammarError, vocab: vocabProfile(text, V, phrases), unitTotal: phrases.length };
+        if (!res.items[it.id]) continue;
+        fb[it.id] = res.items[it.id];
         // a transcribed speaking task: the measurements of the speech (length, speed, pauses) go with the feedback
         if (ex.transcript && it === ex.items[0] && s.answers?._speech?.[exId]) { try { fb[it.id].speech = JSON.parse(s.answers._speech[exId]); } catch {} }
       }
@@ -667,12 +678,137 @@ async function checkWriting(gid, unitId, exId) {
           copied++;
         } else unmatched++;
       }
-      if (n < subs.length && !grammarError) await sleep(3200);   // LanguageTool: at most 20 requests a minute
+      if (n < subs.length && !res.ltFailed) await sleep(res.engine === "ai" ? eng.delay : 3200);   // the free services allow only a few requests a minute
     }
     await updateDoc(doc(db, "groups", gid), { [`feedbackEx.${unitId}`]: arrayUnion(exId) });
     const pairNote = ex.pair ? ` ${copied} ${copied === 1 ? "copy" : "copies"} sent to partners${unmatched ? `; ${unmatched} partner ${unmatched === 1 ? "name was" : "names were"} not matched – see Speaking progress` : ""}.` : "";
-    toast((ltFailed ? `Done. The grammar check was not available for ${ltFailed} of ${subs.length}; the vocabulary check worked.` : `Done: ${subs.length} texts checked. Students can see the feedback now.`) + pairNote, 9000);
+    toast((aiFailed ? `The AI check did not work for ${aiFailed} of ${subs.length} (LanguageTool was used instead). ` : "")
+      + (ltFailed ? `Done. The grammar check was not available for ${ltFailed} of ${subs.length}; the vocabulary and the grammar of the module were checked.` : `Done: ${subs.length} texts checked. Students can see the feedback now.`) + pairNote, 9000);
   });
+}
+
+// One student's answers to one exercise: grammar (AI if the teacher has set a key, otherwise LanguageTool), the course's
+// own rules for the grammar of the module, the module's structures the student used, and the vocabulary profile.
+// texts: {itemId: text}. Returns {items: {itemId: feedback}, engine, aiFailed, ltFailed}.
+async function checkTexts(texts, { ex, unitId, V, phrases = [], gids = null }) {
+  const unitMeta = T.units.find((x) => x.id === unitId);
+  gids ??= grammarOf(ex, unitMeta);
+  const speaking = !!ex?.transcript;
+  const clean = Object.fromEntries(Object.entries(texts).map(([id, t]) => [id, String(t || "")]).filter(([, t]) => t.trim()));
+  let ai = null, lt = null, aiFailed = false, ltFailed = false;
+  if (aiReady()) {
+    const prompts = Object.fromEntries((ex?.items || []).filter((it) => clean[it.id] !== undefined && it.text).map((it) => [it.id, String(it.text).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() + (it.zh ? ` / ${it.zh}` : "")]));
+    const task = `${ex?.title || ""}. ${ex?.rubric || ""}${Object.keys(prompts).length ? `\nITEM PROMPTS (for a translation this is the sentence to translate: check that the meaning is kept): ${JSON.stringify(prompts)}` : ""}`;
+    try { ai = await aiCheck(clean, { task, grammar: gids.map((id) => STRUCT[id]), speaking }); }
+    catch (e) { console.warn("AI check", e); aiFailed = true; T.lastAiError = e.message; }
+  }
+  if (!ai) { try { lt = await grammarCheck(clean); } catch (e) { console.warn(e); ltFailed = true; } }
+  const items = {};
+  for (const [id, text] of Object.entries(clean)) {
+    // hesitations (um, er) are blanked out, so that they do not disturb the rules; the positions stay the same
+    const rules = analyse(text.replace(FILLERS, (m) => " ".repeat(m.length)), gids);
+    const issues = [...(ai ? ai[id]?.issues || [] : lt?.[id] || [])];
+    for (const e of rules.errors) if (!issues.some((o) => e.offset < o.offset + o.length && o.offset < e.offset + e.length)) issues.push(e);
+    issues.sort((a, b) => a.offset - b.offset);
+    items[id] = {
+      text, spoken: speaking, issues, grammarError: !ai && ltFailed, engine: ai ? "ai" : "languagetool", engineName: ai ? endpoint().name : "",
+      target: ai ? ai[id]?.target || [] : rules.found.map((f) => ({ ...f, source: "rules" })), targetIds: gids,
+      comment: ai?.[id]?.comment || "", level: ai?.[id]?.level || "",
+      vocab: vocabProfile(text.replace(FILLERS, " "), V, phrases), unitTotal: phrases.length,
+    };
+  }
+  return { items, engine: ai ? "ai" : "languagetool", aiFailed, ltFailed };
+}
+
+// ================================================================== Grammar checker: settings and a place to try it
+function viewChecker() {
+  const s = aiSettings(), P = PROVIDERS[s.provider] || PROVIDERS.custom, ep = endpoint(s);
+  const head = pageHead("Teaching tools", "Grammar checker", "How the students' writing and speaking are checked when you click “Check the writing now” or “Check the speaking now”.");
+  const weeks = T.units.filter((u) => u.status !== "soon");
+  const tw = T.tryUnit && weeks.some((u) => u.id === T.tryUnit) ? T.tryUnit : (weeks.find((u) => u.id === T.unitId) || weeks[weeks.length - 1])?.id || "";
+  const gl = (u) => (u.grammar || []).map((id) => STRUCT[id]?.label).filter(Boolean);
+  return head + `
+  <div class="box ai-box">
+    <h3 style="margin-top:0">Which checker</h3>
+    <label class="row"><input type="radio" name="ai-on" value="0" ${s.on ? "" : "checked"}> <span><b>LanguageTool</b> – free, nothing to set up. Finds general mistakes (agreement, spelling, articles), but misses most mistakes with the gerund and the infinitive.</span></label>
+    <label class="row"><input type="radio" name="ai-on" value="1" ${s.on ? "checked" : ""}> <span><b>AI with your own free key</b> – finds mistakes much better, explains them, says which structures of the module are used correctly and writes a short comment for the student.</span></label>
+    <p class="muted" style="font-size:13px">With both checkers the course's own rules find typical mistakes with the grammar of the module (<i>enjoy to swim, suggested me to go, worth to visit, look forward to see, want that he comes</i>) and list the structures of the module the student used.</p>
+    <div id="ai-fields" ${s.on ? "" : "hidden"}>
+      <div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <label>Service <select id="ai-provider">${Object.entries(PROVIDERS).map(([k, p]) => `<option value="${k}" ${k === s.provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+        <label style="flex:1;min-width:240px">API key <input id="ai-key" type="password" autocomplete="off" value="${esc(s.key)}" placeholder="paste your key here"></label>
+        <label>Model <input id="ai-model" list="ai-models" value="${esc(s.model || P.model)}" style="width:16em"><datalist id="ai-models"></datalist></label>
+        ${s.provider === "custom" ? `<label style="min-width:260px">Address (base URL) <input id="ai-base" value="${esc(s.base)}" placeholder="https://…/v1"></label>` : ""}
+      </div>
+      <p class="muted" style="font-size:13px;margin:8px 0">${esc(P.note)}${P.keys ? ` Get a key: <a href="${esc(P.keys)}" target="_blank" rel="noopener">${esc(P.keys.replace(/^https:\/\//, ""))}</a>.` : ""}
+        The key is kept <b>only in this browser</b> (not in the course database, not on GitHub): students never see it. The students' texts (without names) are sent to ${esc(ep.name)} for the check.</p>
+      <div class="row"><button class="btn small" data-act="ai-test">Test the key</button> <button class="btn small" data-act="ai-models">Show the models</button> <span id="ai-status" class="muted">${aiReady(s) ? `Ready: ${esc(ep.name)} · ${esc(ep.model)}` : s.key ? "" : "Paste a key to switch the AI check on."}</span></div>
+    </div>
+  </div>
+  <div class="box ai-box">
+    <h3 style="margin-top:0">Try it</h3>
+    <div class="row" style="gap:12px;align-items:flex-end">
+      <label>Week <select id="try-unit">${weeks.map((u) => `<option value="${esc(u.id)}" ${u.id === tw ? "selected" : ""}>${esc(uLabel(u))}</option>`).join("")}</select></label>
+      <label>Answer <select id="try-kind"><option value="w">written</option><option value="s" ${T.tryKind === "s" ? "selected" : ""}>spoken (a transcript)</option></select></label>
+    </div>
+    <p class="muted" style="font-size:13px;margin:6px 0">Grammar of the module: ${esc(gl(weeks.find((u) => u.id === tw) || {}).join(", ") || "not set for this week")}</p>
+    <textarea id="try-text" placeholder="Type or paste a student's answer…">${esc(T.tryText || "")}</textarea>
+    <div class="row"><button class="btn primary small" data-act="try-check">Check</button><span id="try-status" class="muted"></span></div>
+    <div id="try-out">${T.tryOut || ""}</div>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">Grammar of the module, week by week</h3>
+    <table class="t"><tr><th>Week</th><th>Structures</th></tr>${weeks.map((u) => `<tr><td>${esc(uLabel(u))}</td><td>${esc(gl(u).join(", ")) || `<span class="muted">not set</span>`}</td></tr>`).join("")}</table>
+    <p class="muted" style="font-size:13px">The list comes from the course file: <code>"grammar": [...]</code> in a week (or in one exercise). Import the course file again after changing it. Available structures: ${STRUCTURES.map((x) => `<code>${x.id}</code> ${esc(x.label)}`).join(" · ")}.</p>
+  </div>`;
+}
+function readAiForm() {
+  const s = aiSettings();
+  const on = document.querySelector('input[name="ai-on"]:checked')?.value === "1";
+  const provider = $("#ai-provider")?.value || s.provider;
+  const changed = provider !== s.provider;
+  return { ...s, on, provider, key: ($("#ai-key")?.value ?? s.key).trim(), model: changed ? "" : ($("#ai-model")?.value ?? s.model).trim(), base: ($("#ai-base")?.value ?? s.base).trim() };
+}
+document.addEventListener("change", (e) => {
+  if (e.target.closest?.(".ai-box") && /^(ai-|try-unit|try-kind)/.test(e.target.id || e.target.name || "")) {
+    if (e.target.id === "try-unit") T.tryUnit = e.target.value;
+    if (e.target.id === "try-kind") T.tryKind = e.target.value;
+    if (/^ai-/.test(e.target.id || e.target.name)) saveAiSettings(readAiForm());
+    T.tryText = $("#try-text")?.value || T.tryText;
+    render(true);
+  }
+});
+async function aiButton(act) {
+  const s = readAiForm(); saveAiSettings(s);
+  const st = $("#ai-status");
+  if (!s.key) { if (st) st.textContent = "Paste the key first."; return; }
+  if (st) st.textContent = "Asking…";
+  try {
+    if (act === "ai-test") { await testAi(s); if (st) st.innerHTML = `<b style="color:var(--ok)">✓ The key works.</b> ${esc(endpoint(s).name)} · ${esc(endpoint(s).model)}`; }
+    else {
+      const list = await listModels(s);
+      const dl = $("#ai-models"); if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m)}">`).join("");
+      if (st) st.textContent = `${list.length} models: click the Model field to choose one.`;
+    }
+  } catch (e) { if (st) st.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
+}
+async function tryCheck() {
+  const text = $("#try-text")?.value || "";
+  T.tryText = text;
+  const st = $("#try-status");
+  if (!text.trim()) { if (st) st.textContent = "Type a text first."; return; }
+  if (st) st.textContent = "Checking…";
+  const unitId = $("#try-unit")?.value || "";
+  const speaking = $("#try-kind")?.value === "s";
+  try {
+    const V = await loadVocab();
+    const { content } = unitId ? await loadUnitData(unitId) : { content: null };
+    const res = await checkTexts({ 1: text }, { ex: { transcript: speaking, title: "Practice", items: [{ id: "1" }] }, unitId, V, phrases: unitVocabulary(content) });
+    const fb = res.items[1];
+    T.tryOut = (res.aiFailed ? `<p class="bad-n">The AI check did not work (${esc(T.lastAiError || "")}); LanguageTool was used.</p>` : "") + feedbackHTML(fb, { teacher: true });
+    const out = $("#try-out"); if (out) out.innerHTML = T.tryOut;
+    if (st) st.textContent = res.engine === "ai" ? `Checked by ${endpoint().name}` : "Checked by LanguageTool";
+  } catch (e) { if (st) st.textContent = "Error: " + (e.message || e); }
 }
 
 // ================================================================== Pair recordings: who was the partner?
@@ -739,7 +875,7 @@ async function loadProgress() {
         const itemIds = skill === "speaking" ? [it.id] : answerable.map((x) => x.id);
         const type = skill === "speaking" ? "" : isTranslation(ex) ? "translation" : itemIds.length > 1 ? `${itemIds.length} sentences` : "a text";
         const promptHTML = skill === "writing" && itemIds.length > 1 ? ex.rubric || "" : it.text || ex.rubric || "";
-        tasks.push({ key: `${u.id}/${ex.id}`, skill, unitId: u.id, unitNo: unitNum(u), ex, itemId: it.id, itemIds, type, num: nums[ex.id] || "",
+        tasks.push({ key: `${u.id}/${ex.id}`, skill, gids: grammarOf(ex, u), unitId: u.id, unitNo: unitNum(u), ex, itemId: it.id, itemIds, type, num: nums[ex.id] || "",
           title: ex.title || "", prompt: new DOMParser().parseFromString(String(promptHTML).replace(/<[^>]+>/g, " "), "text/html").body.textContent.replace(/\s+/g, " ").trim(),
           phrases: own || (skill === "writing" ? unitPhrases : []), phrasesOwn: !!own,
           partnerId: (ex.items || []).find((x) => x.plain)?.id || "" });
@@ -766,12 +902,12 @@ async function loadProgress() {
         const fbs = given.map(([id]) => fbAll[id]);
         const fb = !fbs.some(Boolean) ? undefined
           : { text: fbs.map((f) => String(f?.text || "").trim()).join("\n"), grammarError: fbs.some((f) => f?.grammarError),
-              issues: fbs.flatMap((f) => f?.issues || []) };
+              issues: fbs.flatMap((f) => f?.issues || []), target: fbs.flatMap((f) => f?.target || []), level: fbs.find((f) => f?.level)?.level || "" };
         rows.push({
           uid: sub.uid, key: t.key, skill: t.skill, text, status: sub.status,
           partner: t.partnerId ? String(sub.answers?.[t.ex.id]?.[t.partnerId] || "").trim() : "",
           at: sp?.at || sub.updatedAt?.toMillis?.() || 0, atExact: !!sp?.at,
-          m: measure(text, V, t.phrases, fb, sp),
+          m: measure(text, V, t.phrases, fb, sp, t.gids),
           unitId: t.unitId, exId: t.ex.id, pair: !!t.ex.pair,
         });
       }
@@ -908,7 +1044,10 @@ function viewProgress(skill) {
           : [["Words per sentence", m.sentLen]]),
         ["Subordinating words / 100", m.subPer100], ["MATTR-50", fmtV(m.mattr, "mattr")], ["B2+ words", m.b2plus + "%"], ["C1+ words", m.c1plus + "%"],
         [isSp ? "Task phrases" : "Unit phrases", `${m.phrases}${t.phrasesOwn ? ` of ${t.phrases.length}` : ""}${m.phraseList.length ? ` (${esc(m.phraseList.join(", "))})` : ""}`],
-        ["LanguageTool", m.ltChecked ? `${m.ltAll} issues, ${m.ltGrammar} grammar · ${m.errPer100} errors per 100 words` : m.ltStale ? "the text was changed after the check" : "not checked yet"]];
+        ["Grammar of the module", m.targetUses === null ? "no structures set for this week" : `${m.targetUses} ${m.targetUses === 1 ? "use" : "uses"}, ${m.targetKinds} different${m.targetWrong ? `, ${m.targetWrong} wrong` : ""}${m.targetList.length ? ` (${esc(m.targetList.map((id) => STRUCT[id]?.label || id).join(", "))})` : ""}`],
+        ...(isSp ? [["Hesitations (um, er)", m.fillersPerMin === null ? String(m.fillers) : `${m.fillers} (${fmtV(m.fillersPerMin)} a minute)`]] : []),
+        ...(m.level ? [["Estimated level (AI)", m.level]] : []),
+        ["Grammar check", m.ltChecked ? `${m.ltAll} issues, ${m.ltGrammar} grammar · ${m.errPer100} errors per 100 words` : m.ltStale ? "the text was changed after the check" : "not checked yet"]];
       detail = `<div class="box prog-detail" id="prog-detail"><div class="row" style="justify-content:space-between"><b>${esc(st?.name || "")} · T${tasks.indexOf(t) + 1} · ${esc(t.num)} ${esc(t.title)}</b>
         <button class="btn small" data-act="prog-close">Close</button></div>
         <p class="muted">${esc(t.prompt)}${r.copy ? ` · pair discussion recorded by ${esc(studentName(r.recordedBy))}` : r.partner ? ` · pair with ${esc(studentName(r.partnerUid) || r.partner)}` : ""}</p>
@@ -1017,7 +1156,9 @@ function progressCSV() {
       words: m.words, speech_s: m.speech || "", recording_s: m.total || "", wpm: m.wpm ?? "", pauses: m.pauses ?? "", pauses_per_min: m.pausesPerMin ?? "", longest_pause_s: m.longest ?? "",
       ttr: m.ttr, mattr50: m.mattr, b2plus_pct: m.b2plus, c1plus_pct: m.c1plus, phrases: m.phrases, phrase_list: m.phraseList.join("; "),
       words_per_sentence: m.sentLen, subordinators_per100: m.subPer100, lt_checked: m.ltChecked ? "yes" : "no", lt_issues_all: m.ltAll ?? "", lt_grammar: m.ltGrammar ?? "",
-      errors_per100: m.errPer100 ?? "", text: r.text, text_at_check: m.checkedText };
+      errors_per100: m.errPer100 ?? "", text: r.text, text_at_check: m.checkedText,
+      module_grammar_uses: m.targetUses ?? "", module_grammar_kinds: m.targetKinds ?? "", module_grammar_wrong: m.targetWrong ?? "", module_grammar_list: (m.targetList || []).join("; "),
+      hesitations: r.skill === "speaking" ? m.fillers : "", hesitations_per_min: m.fillersPerMin ?? "", ai_level: m.level || "" };
   });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([toCSV(rows)], { type: "text/csv;charset=utf-8" }));
@@ -1147,6 +1288,9 @@ document.addEventListener("click", (e) => {
     "stats-mode": () => { T.statsAll = b.dataset.mode === "all"; render(true); },
     "stats-reload": () => { T.allData = null; render(true); },
     "lesson-add": () => addLesson(),
+    "ai-test": () => aiButton("ai-test"),
+    "ai-models": () => aiButton("ai-models"),
+    "try-check": () => tryCheck(),
     "lesson-del": () => deleteLesson(b.dataset.date),
     "att": () => toggleAbsent(b.dataset.date, b.dataset.uid),
     "import": () => importCourse(),
@@ -1279,13 +1423,13 @@ function studentDetail(uid, data) {
       num: `${n}.${i + 1}.${j + 1}`,
       answers: sub.answers?.[ex.id] || {},
       speech: sub.answers?._speech?.[ex.id], roster: ex.pair ? rosterOf() : undefined,
-      after: ex.pair && T.exr?.[uid]?.feedback?.[ex.id]?._pair ? pairFeedbackHTML(T.exr[uid].feedback[ex.id]._pair, { checkedAt: fmtTime(T.exr[uid].feedbackAt?.[ex.id]) }) : "",
+      after: ex.pair && T.exr?.[uid]?.feedback?.[ex.id]?._pair ? pairFeedbackHTML(T.exr[uid].feedback[ex.id]._pair, { checkedAt: fmtTime(T.exr[uid].feedbackAt?.[ex.id]), teacher: true }) : "",
       readOnly: true,
       auto: isAuto(ex) ? auto.items[ex.id] : undefined,
       factor: f[ex.id],
       manual: r?.manual?.[ex.id],
       grading: isManual(ex) && !isPractice(ex),
-      itemExtra: T.exr?.[uid]?.feedback?.[ex.id] ? (itemId) => feedbackHTML(T.exr[uid].feedback[ex.id][itemId], { checkedAt: fmtTime(T.exr[uid].feedbackAt?.[ex.id]) }) : null,
+      itemExtra: T.exr?.[uid]?.feedback?.[ex.id] ? (itemId) => feedbackHTML(T.exr[uid].feedback[ex.id][itemId], { checkedAt: fmtTime(T.exr[uid].feedbackAt?.[ex.id]), teacher: true }) : null,
     })).join("");
   }).join("");
   // switching between students without going back to the table
@@ -1540,6 +1684,7 @@ function splitUnit(u) {
   const hasContent = Array.isArray(u.sections) && u.sections.some((s) => (s.blocks || []).length);
   const meta = {
     title: u.title, order: Number(u.order ?? 0),
+    ...(Array.isArray(u.grammar) ? { grammar: u.grammar.filter((id) => STRUCT[id]) } : {}),
     ...(u.label ? { label: String(u.label) } : {}), ...(u.num !== undefined ? { num: String(u.num) } : {}), ...(u.series ? { series: String(u.series) } : {}),
     status: u.status || (hasContent ? "ready" : "soon"),
     sections: (u.sections || []).map((s) => ({ id: s.id, title: s.title, ...(s.subtitle ? { subtitle: s.subtitle } : {}) })),

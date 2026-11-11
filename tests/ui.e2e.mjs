@@ -10,7 +10,7 @@ mkdirSync(SHOTS, { recursive: true });
 const mock = readFileSync(new URL("./mock-fb.js", import.meta.url), "utf8");
 const course = readFileSync(new URL("../content-private/test-fixture.json", import.meta.url), "utf8");
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome" }).catch(() => chromium.launch());
+const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch());
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 await ctx.route("**/js/fb.js*", (r) => r.fulfill({ contentType: "text/javascript", body: mock }));
 // LanguageTool: подставной ответ (в песочнице нет доступа к api.languagetool.org)
